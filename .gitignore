@@ -1,0 +1,23 @@
+# Environnement Python
+venv/
+__pycache__/
+*.pyc
+
+# Variables d'environnement (contient le token API)
+.env
+
+# Données locales
+data/
+chroma_db/
+
+# IDE
+.vscode/
+.idea/
+
+# Build / Distribution
+dist/
+build/
+*.spec
+
+# Logs
+*.log

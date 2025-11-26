@@ -1,0 +1,26 @@
+# Interface utilisateur
+streamlit==1.40.0
+
+# Client API OpenAI-compatible
+openai==1.54.0
+
+# Extraction de documents
+PyMuPDF==1.24.0
+python-docx==1.1.0
+
+# Embeddings locaux
+sentence-transformers==3.3.0
+ollama==0.4.4  # Pour embeddings via Ollama (alternative plus rapide)
+
+# Base vectorielle
+chromadb==0.5.0
+numpy<2.0.0  # IMPORTANT: ChromaDB 0.5.0 incompatible avec NumPy 2.0
+
+# Utilitaires
+python-dotenv==1.0.0
+
+# SÉCURITÉ: Validation des fichiers uploadés (détection MIME type)
+# Sur Windows: pip install python-magic-bin
+# Sur Linux/Mac: pip install python-magic (nécessite libmagic)
+python-magic-bin==0.4.14; sys_platform == "win32"
+python-magic==0.4.27; sys_platform != "win32"
