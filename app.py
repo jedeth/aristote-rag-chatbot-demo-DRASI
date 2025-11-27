@@ -17,6 +17,7 @@ import io
 import ollama  # Version optimisée avec Ollama
 import chromadb
 from chromadb.config import Settings
+import json
 
 # Essayer d'importer python-magic pour la validation des fichiers
 try:
@@ -40,6 +41,10 @@ logging.basicConfig(
 # Constantes de sécurité
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_HISTORY_LENGTH = 20  # Nombre maximum d'échanges dans l'historique
+
+# Répertoire de persistance pour ChromaDB
+PERSIST_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+METADATA_FILE = os.path.join(PERSIST_DIRECTORY, "documents_metadata.json")
 ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"
@@ -262,9 +267,30 @@ def get_embedding(text: str) -> list[float]:
         raise
 
 
+@st.cache_resource
+def get_chroma_client():
+    """
+    Initialise le client ChromaDB persistant (singleton).
+
+    Returns:
+        Client ChromaDB avec stockage sur disque
+    """
+    # Créer le répertoire de persistance s'il n'existe pas
+    os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+
+    client = chromadb.PersistentClient(
+        path=PERSIST_DIRECTORY,
+        settings=Settings(
+            anonymized_telemetry=False,
+            allow_reset=True
+        )
+    )
+    return client
+
+
 def get_chroma_collection(session_id: str = None):
     """
-    Initialise la collection ChromaDB de manière sécurisée.
+    Initialise la collection ChromaDB de manière sécurisée avec persistance.
 
     Args:
         session_id: ID de session pour isoler les collections (optionnel)
@@ -275,10 +301,7 @@ def get_chroma_collection(session_id: str = None):
     else:
         collection_name = "documents"
 
-    client = chromadb.Client(Settings(
-        anonymized_telemetry=False,
-        allow_reset=False  # SÉCURITÉ: désactiver le reset global
-    ))
+    client = get_chroma_client()
 
     collection = client.get_or_create_collection(
         name=collection_name,
@@ -286,6 +309,68 @@ def get_chroma_collection(session_id: str = None):
     )
 
     return collection
+
+
+def save_documents_metadata(documents_text: dict):
+    """
+    Sauvegarde les métadonnées des documents sur disque.
+
+    Args:
+        documents_text: Dictionnaire des documents traités
+    """
+    os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+
+    # Sauvegarder seulement les métadonnées (pas les embeddings, déjà dans ChromaDB)
+    metadata = {}
+    for filename, data in documents_text.items():
+        metadata[filename] = {
+            "text_length": len(data.get("text", "")),
+            "chunks_count": len(data.get("chunks", [])),
+            "indexed_at": datetime.now().isoformat()
+        }
+
+    with open(METADATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+def load_documents_metadata() -> dict:
+    """
+    Charge les métadonnées des documents depuis le disque.
+
+    Returns:
+        Dictionnaire des métadonnées des documents
+    """
+    if os.path.exists(METADATA_FILE):
+        try:
+            with open(METADATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.warning(f"Erreur chargement métadonnées: {e}")
+    return {}
+
+
+def get_indexed_documents() -> list[str]:
+    """
+    Retourne la liste des documents déjà indexés dans ChromaDB.
+
+    Returns:
+        Liste des noms de fichiers indexés
+    """
+    collection = get_chroma_collection()
+    if collection.count() == 0:
+        return []
+
+    # Récupérer tous les documents pour extraire les noms de fichiers uniques
+    try:
+        results = collection.get(include=["metadatas"])
+        filenames = set()
+        for metadata in results.get("metadatas", []):
+            if metadata and "filename" in metadata:
+                filenames.add(metadata["filename"])
+        return list(filenames)
+    except Exception as e:
+        logging.warning(f"Erreur récupération documents indexés: {e}")
+        return []
 
 
 def get_client(api_key: str = None):
@@ -680,7 +765,30 @@ with st.sidebar:
     
     # Section RAG - Upload de documents
     st.header("📚 Base de connaissances")
-    
+
+    # Afficher les documents déjà indexés (persistants)
+    indexed_docs = get_indexed_documents()
+    collection = get_chroma_collection()
+
+    if indexed_docs:
+        st.success(f"💾 Base persistante: {collection.count()} chunks de {len(indexed_docs)} document(s)")
+        with st.expander("📂 Documents indexés", expanded=False):
+            metadata = load_documents_metadata()
+            for doc_name in indexed_docs:
+                doc_meta = metadata.get(doc_name, {})
+                chunks_count = doc_meta.get("chunks_count", "?")
+                indexed_at = doc_meta.get("indexed_at", "date inconnue")
+                if indexed_at != "date inconnue":
+                    # Formater la date
+                    try:
+                        dt = datetime.fromisoformat(indexed_at)
+                        indexed_at = dt.strftime("%d/%m/%Y %H:%M")
+                    except:
+                        pass
+                st.caption(f"📄 **{doc_name}** - {chunks_count} chunks (indexé le {indexed_at})")
+    else:
+        st.info("📭 Aucun document indexé. Chargez des documents pour commencer.")
+
     # Paramètres RAG
     with st.expander("⚙️ Paramètres RAG", expanded=False):
         rag_enabled = st.toggle("Activer le RAG", value=True)
@@ -716,7 +824,9 @@ with st.sidebar:
             st.session_state.documents_text = {}
 
         for file in uploaded_files:
-            if file.name not in st.session_state.documents_text:
+            # Vérifier si le document est déjà indexé (session OU base persistante)
+            already_indexed = file.name in st.session_state.documents_text or file.name in indexed_docs
+            if not already_indexed:
                 # SÉCURITÉ: Valider le fichier avant traitement
                 is_valid, validation_msg = validate_uploaded_file(file)
                 if not is_valid:
@@ -749,32 +859,41 @@ with st.sidebar:
                         "text": text,
                         "chunks": chunks_with_embeddings
                     }
+                    # Sauvegarder les métadonnées sur disque
+                    save_documents_metadata(st.session_state.documents_text)
                 except Exception as e:
                     error_msg = handle_error(e, f"Traitement fichier {file.name}")
                     st.error(f"❌ Erreur lors du traitement de {file.name}: {error_msg}")
             
-            # Afficher un aperçu (seulement si le fichier a été traité avec succès)
+            # Afficher un aperçu (seulement si le fichier a été traité dans cette session)
             if file.name in st.session_state.documents_text:
                 doc_data = st.session_state.documents_text[file.name]
                 text = doc_data["text"]
                 chunks = doc_data["chunks"]
 
-                with st.expander(f"📄 {file.name} ({len(chunks)} chunks)"):
+                with st.expander(f"📄 {file.name} ({len(chunks)} chunks) - Nouveau"):
                     st.caption(f"{len(text)} caractères → {len(chunks)} chunks vectorisés")
                     st.text(text[:300] + "..." if len(text) > 300 else text)
-        
-        # Afficher le nombre total de documents indexés
+            elif file.name in indexed_docs:
+                # Document déjà dans la base persistante
+                st.caption(f"📄 {file.name} - ✅ Déjà indexé (base persistante)")
+
+        # Actualiser la collection après les nouveaux ajouts
         collection = get_chroma_collection()
-        st.success(f"✅ {collection.count()} chunks indexés au total")
+        st.success(f"✅ {collection.count()} chunks indexés au total (persistant)")
         
         # Bouton pour réinitialiser la base
         if st.button("🔄 Réinitialiser la base"):
-            # Réinitialiser ChromaDB
-            client = chromadb.Client(Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            ))
-            client.reset()
+            # Réinitialiser ChromaDB persistant
+            client = get_chroma_client()
+            # Supprimer la collection
+            try:
+                client.delete_collection("documents")
+            except Exception:
+                pass
+            # Supprimer les fichiers de métadonnées
+            if os.path.exists(METADATA_FILE):
+                os.remove(METADATA_FILE)
             st.session_state.documents_text = {}
             st.cache_resource.clear()
             st.rerun()
