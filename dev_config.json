@@ -1,0 +1,14 @@
+{
+    "_comment": "FICHIER DE DEVELOPPEMENT UNIQUEMENT - NE PAS COMMITER EN PRODUCTION",
+    "_warning": "Ce fichier contient des clés API sensibles pour le développement local",
+    "dev_mode": true,
+    "api_keys": {
+        "aristote_api_key": "drasi-idf-1-84e20c68-c43f-4a71-b655-a5af1426eb02",
+        "aristote_api_url": "https://llm.ilaas.fr/v1",
+        "albert_api_key": "sk-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo5MjY0LCJ0b2tlbl9pZCI6NTc1NywiZXhwaXJlc19hdCI6MTc5NTg3MzIyMH0.ksHtaXrlkDpZRirmCxh7BmrjCQnKebEDpQpWCoAnvDs"
+    },
+    "default_providers": {
+        "embeddings": "ollama",
+        "llm": "aristote"
+    }
+}
