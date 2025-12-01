@@ -1,0 +1,30 @@
+# =============================================================================
+# Requirements ALLÉGÉS pour Aristote RAG Chatbot v2
+# =============================================================================
+# Cette version utilise uniquement les APIs externes (Albert/Aristote)
+# SANS les modèles locaux (sentence-transformers/PyTorch)
+# Taille image: ~500 Mo au lieu de ~5 Go
+# =============================================================================
+
+# Interface utilisateur
+streamlit==1.40.0
+
+# Client API OpenAI-compatible (pour Aristote et Albert APIs)
+openai==1.54.0
+
+# Extraction de documents
+PyMuPDF==1.24.0
+python-docx==1.1.0
+
+# Base vectorielle
+chromadb==0.5.0
+numpy<2.0.0  # IMPORTANT: ChromaDB 0.5.0 incompatible avec NumPy 2.0
+
+# Utilitaires
+python-dotenv==1.0.0
+
+# SÉCURITÉ: Validation des fichiers uploadés (détection MIME type)
+python-magic==0.4.27
+
+# NOTE: sentence-transformers et ollama ont été supprimés
+# car on utilise Albert API pour les embeddings

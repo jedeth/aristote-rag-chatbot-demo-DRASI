@@ -1,7 +1,8 @@
 # =============================================================================
 # Dockerfile pour Aristote RAG Chatbot v2
 # =============================================================================
-# Multi-stage build pour une image légère
+# Image ALLÉGÉE utilisant Albert API pour les embeddings
+# SANS PyTorch/sentence-transformers (~500 Mo au lieu de ~5 Go)
 # Compatible Docker et Podman
 # =============================================================================
 
@@ -17,9 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copier et installer les dépendances Python
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Copier et installer les dépendances Python ALLÉGÉES
+# (sans sentence-transformers/PyTorch - on utilise Albert API)
+COPY requirements-light.txt .
+RUN pip install --no-cache-dir --user -r requirements-light.txt
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime - Image finale légère
