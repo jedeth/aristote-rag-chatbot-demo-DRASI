@@ -1,0 +1,51 @@
+
+================================================================
+          ARISTOTE RAG CHATBOT - GUIDE RAPIDE
+================================================================
+
+INSTALLATION EN 2 ETAPES :
+
+1. CONFIGURER (une seule fois)
+   ----------------------------
+   - Double-cliquez sur CONFIGURER.bat
+   - Remplacez "votre_token_ici" par votre cle API Aristote
+   - Sauvegardez (Ctrl+S) et fermez le Bloc-notes
+
+2. DEMARRER
+   ---------
+   - Double-cliquez sur DEMARRER.bat
+   - Attendez que l'application demarre (1-2 minutes)
+   - L'application s'ouvre dans votre navigateur
+   - Adresse : http://localhost:8501
+
+
+PREMIER DEMARRAGE :
+-------------------
+Le premier demarrage peut prendre 5-10 minutes car il
+telecharge le modele d'embeddings (~270 Mo).
+Les demarrages suivants seront beaucoup plus rapides.
+
+
+ARRETER L'APPLICATION :
+-----------------------
+- Appuyez sur Ctrl+C dans la fenetre noire
+- OU double-cliquez sur ARRETER.bat
+- OU fermez simplement la fenetre noire
+
+
+SI L'APPLICATION NE S'OUVRE PAS :
+---------------------------------
+Ouvrez manuellement dans votre navigateur :
+http://localhost:8501
+
+
+DEPANNAGE :
+-----------
+- "Erreur Ollama" : Fermez tout et relancez DEMARRER.bat
+- "Cle API invalide" : Verifiez votre cle dans CONFIGURER.bat
+- Ecran blanc : Attendez 30 secondes, l'application charge
+
+
+BESOIN D'AIDE ?
+---------------
+Contactez l'equipe DRASI ou consultez la documentation.

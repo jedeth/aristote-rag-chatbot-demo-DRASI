@@ -259,8 +259,8 @@ def step5_create_pack():
     (app_dir / "data").mkdir(exist_ok=True)
     (app_dir / "chroma_db").mkdir(exist_ok=True)
 
-    # Créer les scripts de lancement
-    create_launcher_scripts(pack_dir)
+    # Copier les scripts de lancement depuis les templates
+    copy_launcher_scripts(pack_dir)
 
     # Créer le ZIP final
     DIST_DIR.mkdir(parents=True, exist_ok=True)
@@ -275,8 +275,36 @@ def step5_create_pack():
     return zip_path
 
 
-def create_launcher_scripts(pack_dir: Path):
-    """Crée les scripts de lancement pour l'utilisateur final."""
+def copy_launcher_scripts(pack_dir: Path):
+    """Copie les scripts de lancement depuis les templates."""
+    templates_dir = SCRIPT_DIR / "templates"
+
+    templates = [
+        "DEMARRER.bat",
+        "ARRETER.bat",
+        "CONFIGURER.bat",
+        "LISEZ-MOI.txt"
+    ]
+
+    for template in templates:
+        src = templates_dir / template
+        if src.exists():
+            shutil.copy2(src, pack_dir / template)
+            log(f"  Copié: {template}")
+        else:
+            log(f"  ATTENTION: Template manquant: {template}", "WARN")
+
+    # Copier aussi DEBUG.bat s'il existe
+    debug_script = SCRIPT_DIR / "DEBUG.bat"
+    if debug_script.exists():
+        shutil.copy2(debug_script, pack_dir / "DEBUG.bat")
+        log("  Copié: DEBUG.bat")
+
+    log("Scripts de lancement copiés")
+
+
+def create_launcher_scripts_legacy(pack_dir: Path):
+    """LEGACY: Crée les scripts de lancement (utilisé si templates absents)."""
 
     # Script principal de démarrage
     start_script = pack_dir / "DEMARRER.bat"
