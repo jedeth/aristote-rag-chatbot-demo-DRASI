@@ -1,0 +1,74 @@
+# =============================================================================
+# .dockerignore - Fichiers à exclure du build Docker
+# =============================================================================
+
+# Environnement Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+
+# Fichiers sensibles
+.env
+.env.*
+!.env.example
+!.env.production.example
+dev_config.json
+secrets/
+*.key
+*.pem
+
+# Données locales (seront montées en volumes)
+data/
+chroma_db/
+chroma_db_v2/
+uploads/
+*.log
+logs/
+
+# IDE et éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Build et distribution
+dist/
+build/
+*.spec
+
+# Documentation (optionnel - à inclure si nécessaire)
+*.md
+!README.md
+
+# Tests
+tests/
+test_*.py
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Scripts de build standalone (pas nécessaires en Docker)
+build_*.py
+setup_environment.py
+launcher.py
+installer.iss
+
+# Fichiers OS
+.DS_Store
+Thumbs.db
+
+# Docker (éviter la récursion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
