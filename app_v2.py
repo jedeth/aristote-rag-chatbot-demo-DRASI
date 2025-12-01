@@ -9,12 +9,6 @@ Version avec support multi-provider:
 """
 
 import os
-from dotenv import load_dotenv
-
-# Charger les variables d'environnement AVANT tout le reste
-load_dotenv()
-
-import streamlit as st
 import re
 import logging
 import traceback
@@ -22,58 +16,24 @@ import uuid
 import secrets
 import hashlib
 from datetime import datetime, timedelta
-from collections import defaultdict
+from collections import defaultdict, Counter
+import io
+import json
+import math
+from pathlib import Path
+
+import streamlit as st
 from openai import OpenAI
 import fitz  # PyMuPDF
 from docx import Document
-import io
 import chromadb
 from chromadb.config import Settings
-import json
-import math
-from collections import Counter
-from pathlib import Path
 
 # =============================================================================
-# CONFIGURATION DEVELOPPEMENT (CLÉS API LOCALES)
+# CONFIGURATION CENTRALISÉE
 # =============================================================================
-
-DEV_CONFIG_FILE = Path(__file__).parent / "dev_config.json"
-DEV_MODE = False
-DEV_CONFIG = {}
-
-def load_dev_config():
-    """Charge la configuration de développement si elle existe."""
-    global DEV_MODE, DEV_CONFIG
-    if DEV_CONFIG_FILE.exists():
-        try:
-            with open(DEV_CONFIG_FILE, "r", encoding="utf-8") as f:
-                DEV_CONFIG = json.load(f)
-            DEV_MODE = DEV_CONFIG.get("dev_mode", False)
-            return True
-        except Exception as e:
-            logging.warning(f"Erreur chargement dev_config.json: {e}")
-    return False
-
-def save_dev_config():
-    """Sauvegarde la configuration de développement."""
-    global DEV_CONFIG
-    try:
-        with open(DEV_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEV_CONFIG, f, indent=4, ensure_ascii=False)
-        return True
-    except Exception as e:
-        logging.error(f"Erreur sauvegarde dev_config.json: {e}")
-        return False
-
-def get_dev_api_key(key_name: str) -> str:
-    """Récupère une clé API depuis la config dev."""
-    if DEV_MODE and DEV_CONFIG:
-        return DEV_CONFIG.get("api_keys", {}).get(key_name, "")
-    return ""
-
-# Charger la config dev au démarrage
-load_dev_config()
+import config
+import auth
 
 # Import des providers multi-provider
 from providers.embeddings import OllamaEmbeddings, AlbertEmbeddings
@@ -90,20 +50,28 @@ except ImportError:
     logging.warning("python-magic non disponible. Validation MIME désactivée.")
 
 # =============================================================================
-# CONFIGURATION SÉCURITÉ
+# CONFIGURATION LOGGING
 # =============================================================================
 
+# Créer le handler de fichier pour les logs de sécurité
+log_file = config.LOG_DIR / "app_security.log"
 logging.basicConfig(
-    filename="app_security.log",
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Aussi en console pour Docker
+    ],
     level=logging.ERROR,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_HISTORY_LENGTH = 20
+# =============================================================================
+# CONSTANTES (depuis config.py)
+# =============================================================================
 
-PERSIST_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db_v2")
-METADATA_FILE = os.path.join(PERSIST_DIRECTORY, "documents_metadata.json")
+MAX_FILE_SIZE = config.MAX_FILE_SIZE
+MAX_HISTORY_LENGTH = config.MAX_HISTORY_LENGTH
+PERSIST_DIRECTORY = str(config.CHROMA_DIR)
+METADATA_FILE = str(config.METADATA_FILE)
 ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"
@@ -131,38 +99,8 @@ DANGEROUS_PATTERNS = [
 # CONFIGURATION DES PROVIDERS
 # =============================================================================
 
-# Configuration par défaut des providers
-PROVIDER_CONFIG = {
-    "embeddings": {
-        "default": "ollama",  # ollama ou albert
-        "ollama": {
-            "model": "nomic-embed-text",
-            "base_url": "http://localhost:11434"
-        },
-        "albert": {
-            "model": "embeddings-small"
-        }
-    },
-    "llm": {
-        "default": "aristote",  # aristote ou albert
-        "aristote": {
-            "model": "meta-llama/Llama-3.3-70B-Instruct"
-        },
-        "albert": {
-            "model": "albert-large",  # albert-small, albert-large, albert-code
-            "available_models": ["albert-small", "albert-large", "albert-code"]
-        }
-    },
-    "rerank": {
-        "enabled": False,
-        "model": "rerank-small",
-        "top_k": 5
-    },
-    "vision": {
-        "enabled": False,
-        "model": "albert-large"
-    }
-}
+# Configuration par défaut des providers (depuis config.py)
+PROVIDER_CONFIG = config.get_provider_config()
 
 # =============================================================================
 # CLASSES DE SÉCURITÉ
@@ -171,7 +109,7 @@ PROVIDER_CONFIG = {
 class RateLimiter:
     """Rate limiter simple basé sur une fenêtre glissante."""
 
-    def __init__(self, max_requests: int = 20, window_seconds: int = 60):
+    def __init__(self, max_requests: int = config.RATE_LIMIT_REQUESTS, window_seconds: int = config.RATE_LIMIT_WINDOW):
         self.max_requests = max_requests
         self.window = timedelta(seconds=window_seconds)
         self.requests = defaultdict(list)
@@ -269,76 +207,71 @@ def validate_uploaded_file(uploaded_file) -> tuple[bool, str]:
 
 def get_embedding_provider():
     """Retourne le provider d'embeddings configuré."""
-    config = st.session_state.get("provider_config", PROVIDER_CONFIG)
-    provider_type = config["embeddings"]["default"]
+    provider_cfg = st.session_state.get("provider_config", PROVIDER_CONFIG)
+    provider_type = provider_cfg["embeddings"]["default"]
 
     if provider_type == "albert":
-        api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+        api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
         if not api_key:
             st.error("Clé API Albert requise pour les embeddings Albert")
             return None
         return AlbertEmbeddings(api_key=api_key)
     else:
         # Ollama par défaut
-        ollama_config = config["embeddings"]["ollama"]
+        ollama_cfg = provider_cfg["embeddings"]["ollama"]
         return OllamaEmbeddings(
-            model=ollama_config["model"],
-            base_url=ollama_config["base_url"]
+            model=ollama_cfg["model"],
+            base_url=ollama_cfg["base_url"]
         )
 
 
 def get_llm_provider():
     """Retourne le provider LLM configuré."""
-    config = st.session_state.get("provider_config", PROVIDER_CONFIG)
-    provider_type = config["llm"]["default"]
+    provider_cfg = st.session_state.get("provider_config", PROVIDER_CONFIG)
+    provider_type = provider_cfg["llm"]["default"]
 
     if provider_type == "albert":
-        api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+        api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
         if not api_key:
             st.error("Clé API Albert requise pour le LLM Albert")
             return None
-        model = config["llm"]["albert"]["model"]
+        model = provider_cfg["llm"]["albert"]["model"]
         return AlbertLLM(api_key=api_key, model=model)
     else:
         # Aristote par défaut
-        api_key = st.session_state.get("aristote_api_key") or os.getenv("ARISTOTE_API_KEY")
-        api_base = (
-            st.session_state.get("aristote_api_url") or
-            os.getenv("ARISTOTE_DISPATCHER_URL") or
-            os.getenv("ARISTOTE_API_BASE") or
-            "https://llm.ilaas.fr/v1"
-        )
+        api_key = st.session_state.get("aristote_api_key") or config.ARISTOTE_API_KEY
+        api_base = st.session_state.get("aristote_api_url") or config.ARISTOTE_API_BASE
         if not api_key:
             st.error("Clé API Aristote requise. Configurez-la dans la sidebar.")
             return None
-        model = st.session_state.get("selected_model") or config["llm"]["aristote"]["model"]
+        model = st.session_state.get("selected_model") or provider_cfg["llm"]["aristote"]["model"]
         return AristoteLLM(api_key=api_key, base_url=api_base, model=model)
 
 
 def get_reranker():
     """Retourne le reranker Albert si activé."""
-    config = st.session_state.get("provider_config", PROVIDER_CONFIG)
-    if not config["rerank"]["enabled"]:
+    provider_cfg = st.session_state.get("provider_config", PROVIDER_CONFIG)
+    if not provider_cfg["rerank"]["enabled"]:
         return None
 
-    api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+    api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
     if not api_key:
         return None
 
-    return AlbertReranker(api_key=api_key, model=config["rerank"]["model"])
+    return AlbertReranker(api_key=api_key, model=provider_cfg["rerank"]["model"])
 
 
 def get_vision_provider():
     """Retourne le provider de vision Albert si activé."""
-    config = st.session_state.get("provider_config", PROVIDER_CONFIG)
-    if not config["vision"]["enabled"]:
+    provider_cfg = st.session_state.get("provider_config", PROVIDER_CONFIG)
+    if not provider_cfg["vision"]["enabled"]:
         return None
 
-    api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+    api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
     if not api_key:
         return None
 
-    return AlbertVision(api_key=api_key, model=config["vision"]["model"])
+    return AlbertVision(api_key=api_key, model=provider_cfg["vision"]["model"])
 
 
 # =============================================================================
@@ -375,25 +308,26 @@ def get_chroma_client():
     return client
 
 
-def get_chroma_collection(session_id: str = None, embedding_provider: str = None):
+def get_chroma_collection(embedding_provider: str = None):
     """
     Récupère ou crée une collection ChromaDB.
 
-    Les collections sont séparées par provider d'embeddings car les dimensions
-    diffèrent (Ollama nomic-embed-text: 768, Albert embeddings-small: 1024).
+    Les collections sont :
+    - Séparées par provider d'embeddings (dimensions différentes)
+    - Isolées par utilisateur si l'authentification est activée
+
+    En mode AUTH_MODE=none : collection partagée
+    En mode AUTH_MODE=simple/cas : collection par utilisateur
     """
     # Déterminer le provider d'embeddings actuel
     if embedding_provider is None:
         embedding_provider = st.session_state.get("provider_config", {}).get("embeddings", {}).get("default", "ollama")
 
-    # Construire le nom de la collection avec le provider
-    if session_id:
-        base_name = f"docs_{hashlib.sha256(session_id.encode()).hexdigest()[:16]}"
-    else:
-        base_name = "documents_v2"
-
-    # Ajouter le suffixe du provider pour séparer les collections
-    collection_name = f"{base_name}_{embedding_provider}"
+    # Utiliser le module auth pour obtenir le nom de collection (avec isolation utilisateur)
+    collection_name = auth.get_collection_name(
+        base_name="documents_v2",
+        embedding_provider=embedding_provider
+    )
 
     client = get_chroma_client()
     collection = client.get_or_create_collection(
@@ -453,12 +387,12 @@ def get_indexed_documents() -> list[str]:
 # =============================================================================
 
 def get_client(api_key: str = None):
-    key = api_key or st.session_state.get("aristote_api_key") or os.getenv("ARISTOTE_API_KEY", "")
+    key = api_key or st.session_state.get("aristote_api_key") or config.ARISTOTE_API_KEY
     if not key:
         raise ValueError("Clé API non configurée")
     return OpenAI(
         api_key=key,
-        base_url=os.getenv("ARISTOTE_API_BASE", "https://llm.ilaas.fr/v1")
+        base_url=st.session_state.get("aristote_api_url") or config.ARISTOTE_API_BASE
     )
 
 
@@ -528,9 +462,9 @@ def extract_pdf_with_images(
     # Extraire et analyser les images si vision activée
     image_chunks = []
     if use_vision:
-        config = st.session_state.get("provider_config", PROVIDER_CONFIG)
-        if config["vision"]["enabled"]:
-            api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+        provider_cfg = st.session_state.get("provider_config", PROVIDER_CONFIG)
+        if provider_cfg["vision"]["enabled"]:
+            api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
             if api_key:
                 try:
                     text_from_vision, image_chunks = extract_pdf_with_vision(
@@ -847,8 +781,26 @@ st.set_page_config(
     layout="wide"
 )
 
+# =============================================================================
+# AUTHENTIFICATION
+# =============================================================================
+
+# Vérifier si l'utilisateur est authentifié (selon AUTH_MODE)
+if not auth.render_login_form():
+    st.stop()  # Arrêter ici si pas authentifié
+
+# =============================================================================
+# APPLICATION PRINCIPALE
+# =============================================================================
+
 st.title("🤖 Aristote RAG Chatbot v2")
-st.caption("Chatbot intelligent avec RAG - Multi-Provider Edition (Aristote + Albert)")
+
+# Afficher le mode d'authentification et l'utilisateur
+if config.AUTH_MODE != "none":
+    user_info = f"👤 {auth.get_user_display_name()}"
+    st.caption(f"Chatbot RAG Multi-Provider | {user_info}")
+else:
+    st.caption("Chatbot intelligent avec RAG - Multi-Provider Edition (Aristote + Albert)")
 
 # Initialisation
 if "rate_limiter" not in st.session_state:
@@ -865,19 +817,9 @@ if "messages" not in st.session_state:
 
 # Sidebar
 with st.sidebar:
+    # Menu utilisateur (si auth activée)
+    auth.render_user_menu()
     st.header("⚙️ Configuration Multi-Provider")
-
-    # === ALERTE MODE DEVELOPPEMENT ===
-    if DEV_MODE:
-        st.warning(
-            "⚠️ **MODE DÉVELOPPEMENT ACTIF**\n\n"
-            "Les clés API sont chargées depuis `dev_config.json`.\n\n"
-            "**NE PAS DÉPLOYER EN PRODUCTION !**",
-            icon="🔧"
-        )
-        # Checkbox pour sauvegarder les modifications
-        if "dev_save_keys" not in st.session_state:
-            st.session_state.dev_save_keys = False
 
     # === Section Providers ===
     with st.expander("🔌 Providers", expanded=True):
@@ -935,26 +877,17 @@ with st.sidebar:
     # === Section Clés API ===
     st.header("🔑 Clés API")
 
-    # En mode dev, afficher un indicateur
-    if DEV_MODE:
-        st.caption("🔧 Clés pré-chargées depuis dev_config.json")
+    # Indicateur de configuration depuis .env
+    if config.ARISTOTE_API_KEY or config.ALBERT_API_KEY:
+        st.caption("🔧 Clés pré-chargées depuis .env")
 
     # Aristote - Toujours afficher si LLM = aristote
     needs_aristote = st.session_state.provider_config["llm"]["default"] == "aristote"
 
     if needs_aristote:
-        # Récupérer la valeur depuis: 1) session_state, 2) dev_config, 3) env
-        default_aristote_key = (
-            st.session_state.get("aristote_api_key") or
-            get_dev_api_key("aristote_api_key") or
-            os.getenv("ARISTOTE_API_KEY", "")
-        )
-        default_aristote_url = (
-            st.session_state.get("aristote_api_url") or
-            get_dev_api_key("aristote_api_url") or
-            os.getenv("ARISTOTE_API_BASE") or
-            os.getenv("ARISTOTE_DISPATCHER_URL", "https://llm.ilaas.fr/v1")
-        )
+        # Récupérer la valeur depuis: 1) session_state, 2) config.py (.env)
+        default_aristote_key = st.session_state.get("aristote_api_key") or config.ARISTOTE_API_KEY
+        default_aristote_url = st.session_state.get("aristote_api_url") or config.ARISTOTE_API_BASE
 
         aristote_key = st.text_input(
             "Clé API Aristote",
@@ -972,16 +905,6 @@ with st.sidebar:
         if aristote_key:
             st.session_state.aristote_api_key = aristote_key
             st.session_state.aristote_api_url = aristote_url
-            # Aussi mettre dans os.environ pour compatibilité
-            os.environ["ARISTOTE_API_KEY"] = aristote_key
-            os.environ["ARISTOTE_API_BASE"] = aristote_url
-            os.environ["ARISTOTE_DISPATCHER_URL"] = aristote_url
-
-            # Sauvegarder dans dev_config si mode dev
-            if DEV_MODE:
-                DEV_CONFIG.setdefault("api_keys", {})
-                DEV_CONFIG["api_keys"]["aristote_api_key"] = aristote_key
-                DEV_CONFIG["api_keys"]["aristote_api_url"] = aristote_url
 
             # Liste des modèles Aristote
             models = get_available_models(aristote_key, aristote_url)
@@ -1001,12 +924,8 @@ with st.sidebar:
     )
 
     if needs_albert:
-        # Récupérer depuis: 1) session_state, 2) dev_config, 3) env
-        default_albert_key = (
-            st.session_state.get("albert_api_key") or
-            get_dev_api_key("albert_api_key") or
-            os.getenv("ALBERT_API_KEY", "")
-        )
+        # Récupérer depuis: 1) session_state, 2) config.py (.env)
+        default_albert_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
 
         albert_key = st.text_input(
             "Clé API Albert (Etalab)",
@@ -1016,22 +935,7 @@ with st.sidebar:
         )
         if albert_key:
             st.session_state.albert_api_key = albert_key
-            os.environ["ALBERT_API_KEY"] = albert_key
-
-            # Sauvegarder dans dev_config si mode dev
-            if DEV_MODE:
-                DEV_CONFIG.setdefault("api_keys", {})
-                DEV_CONFIG["api_keys"]["albert_api_key"] = albert_key
-
             st.success("✅ Clé Albert configurée")
-
-    # Bouton pour sauvegarder les clés en mode dev
-    if DEV_MODE and (needs_aristote or needs_albert):
-        if st.button("💾 Sauvegarder les clés (dev)", help="Enregistre les clés dans dev_config.json"):
-            if save_dev_config():
-                st.success("✅ Clés sauvegardées dans dev_config.json")
-            else:
-                st.error("❌ Erreur lors de la sauvegarde")
 
     st.divider()
 
@@ -1140,7 +1044,7 @@ with st.sidebar:
                     # Extraction des images si vision activée
                     image_chunks = []
                     if use_vision and file.name.lower().endswith(".pdf"):
-                        api_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+                        api_key = st.session_state.get("albert_api_key") or config.ALBERT_API_KEY
                         if api_key:
                             with st.spinner(f"Analyse des images avec Albert Vision..."):
                                 try:
@@ -1375,8 +1279,8 @@ Utilise ces informations et cite tes sources.
                                 for m in st.session_state.messages:
                                     messages.append({"role": m["role"], "content": m["content"]})
 
-                            # Debug: afficher le contexte si mode dev
-                            if DEV_MODE:
+                            # Debug: afficher le contexte si mode debug
+                            if config.DEBUG:
                                 with st.expander("🔧 Debug: Contexte envoyé au LLM"):
                                     st.text(f"Provider: {llm_provider}")
                                     st.text(f"Taille contexte: {len(context)} caractères")
