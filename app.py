@@ -17,6 +17,9 @@ import io
 import ollama  # Version optimisée avec Ollama
 import chromadb
 from chromadb.config import Settings
+import json
+import math
+from collections import Counter
 
 # Essayer d'importer python-magic pour la validation des fichiers
 try:
@@ -40,6 +43,10 @@ logging.basicConfig(
 # Constantes de sécurité
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_HISTORY_LENGTH = 20  # Nombre maximum d'échanges dans l'historique
+
+# Répertoire de persistance pour ChromaDB
+PERSIST_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+METADATA_FILE = os.path.join(PERSIST_DIRECTORY, "documents_metadata.json")
 ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"
@@ -262,9 +269,30 @@ def get_embedding(text: str) -> list[float]:
         raise
 
 
+@st.cache_resource
+def get_chroma_client():
+    """
+    Initialise le client ChromaDB persistant (singleton).
+
+    Returns:
+        Client ChromaDB avec stockage sur disque
+    """
+    # Créer le répertoire de persistance s'il n'existe pas
+    os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+
+    client = chromadb.PersistentClient(
+        path=PERSIST_DIRECTORY,
+        settings=Settings(
+            anonymized_telemetry=False,
+            allow_reset=True
+        )
+    )
+    return client
+
+
 def get_chroma_collection(session_id: str = None):
     """
-    Initialise la collection ChromaDB de manière sécurisée.
+    Initialise la collection ChromaDB de manière sécurisée avec persistance.
 
     Args:
         session_id: ID de session pour isoler les collections (optionnel)
@@ -275,10 +303,7 @@ def get_chroma_collection(session_id: str = None):
     else:
         collection_name = "documents"
 
-    client = chromadb.Client(Settings(
-        anonymized_telemetry=False,
-        allow_reset=False  # SÉCURITÉ: désactiver le reset global
-    ))
+    client = get_chroma_client()
 
     collection = client.get_or_create_collection(
         name=collection_name,
@@ -286,6 +311,68 @@ def get_chroma_collection(session_id: str = None):
     )
 
     return collection
+
+
+def save_documents_metadata(documents_text: dict):
+    """
+    Sauvegarde les métadonnées des documents sur disque.
+
+    Args:
+        documents_text: Dictionnaire des documents traités
+    """
+    os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+
+    # Sauvegarder seulement les métadonnées (pas les embeddings, déjà dans ChromaDB)
+    metadata = {}
+    for filename, data in documents_text.items():
+        metadata[filename] = {
+            "text_length": len(data.get("text", "")),
+            "chunks_count": len(data.get("chunks", [])),
+            "indexed_at": datetime.now().isoformat()
+        }
+
+    with open(METADATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+def load_documents_metadata() -> dict:
+    """
+    Charge les métadonnées des documents depuis le disque.
+
+    Returns:
+        Dictionnaire des métadonnées des documents
+    """
+    if os.path.exists(METADATA_FILE):
+        try:
+            with open(METADATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.warning(f"Erreur chargement métadonnées: {e}")
+    return {}
+
+
+def get_indexed_documents() -> list[str]:
+    """
+    Retourne la liste des documents déjà indexés dans ChromaDB.
+
+    Returns:
+        Liste des noms de fichiers indexés
+    """
+    collection = get_chroma_collection()
+    if collection.count() == 0:
+        return []
+
+    # Récupérer tous les documents pour extraire les noms de fichiers uniques
+    try:
+        results = collection.get(include=["metadatas"])
+        filenames = set()
+        for metadata in results.get("metadatas", []):
+            if metadata and "filename" in metadata:
+                filenames.add(metadata["filename"])
+        return list(filenames)
+    except Exception as e:
+        logging.warning(f"Erreur récupération documents indexés: {e}")
+        return []
 
 
 def get_client(api_key: str = None):
@@ -437,54 +524,106 @@ def extract_text(uploaded_file) -> str:
         return ""
 
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[dict]:
+def extract_document_header(text: str, max_header_size: int = 300) -> str:
     """
-    Découpe le texte en chunks avec chevauchement.
-    
+    Extrait l'en-tête/introduction du document (titre, métadonnées initiales).
+
+    Args:
+        text: Le texte complet du document
+        max_header_size: Taille maximale de l'en-tête
+
+    Returns:
+        L'en-tête du document
+    """
+    # Chercher les premières lignes significatives
+    lines = text.split('\n')
+    header_lines = []
+    current_size = 0
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Arrêter si on atteint une section de contenu (souvent marquée par des emojis ou titres)
+        if current_size > 100 and any(marker in line for marker in ['🛠️', '👩‍🍳', '📌', '##', '###', 'Étapes', 'Instructions']):
+            break
+
+        header_lines.append(line)
+        current_size += len(line)
+
+        if current_size >= max_header_size:
+            break
+
+    return '\n'.join(header_lines)
+
+
+def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[dict]:
+    """
+    Découpe le texte en chunks avec chevauchement et contexte d'en-tête.
+
+    Chaque chunk inclut l'en-tête du document pour conserver le contexte global.
+
     Args:
         text: Le texte à découper
         chunk_size: Taille cible de chaque chunk (en caractères)
         overlap: Chevauchement entre les chunks
-    
+
     Returns:
         Liste de dictionnaires avec le texte et les métadonnées
     """
+    # Extraire l'en-tête du document
+    header = extract_document_header(text)
+    header_prefix = f"[CONTEXTE DOCUMENT]\n{header}\n[FIN CONTEXTE]\n\n" if header else ""
+
     chunks = []
     start = 0
     chunk_id = 0
-    
+
+    # Ajuster la taille effective pour tenir compte du header
+    effective_chunk_size = chunk_size - len(header_prefix) if header_prefix else chunk_size
+
     while start < len(text):
-        end = start + chunk_size
-        
-        # Essayer de couper à une fin de phrase
+        end = start + effective_chunk_size
+
+        # Essayer de couper à une fin de phrase ou section
         if end < len(text):
-            # Chercher le dernier point, point d'interrogation ou retour ligne
-            for sep in [". ", "? ", "! ", "\n"]:
+            # Priorité aux fins de sections, puis phrases
+            best_cut = -1
+            for sep in ["\n\n", "\n", ". ", "? ", "! "]:
                 last_sep = text[start:end].rfind(sep)
-                if last_sep != -1:
-                    end = start + last_sep + len(sep)
+                if last_sep != -1 and last_sep > effective_chunk_size * 0.5:
+                    best_cut = start + last_sep + len(sep)
                     break
-        
+            if best_cut > start:
+                end = best_cut
+
         chunk_text_content = text[start:end].strip()
-        
+
         if chunk_text_content:
+            # Ajouter le contexte d'en-tête à chaque chunk (sauf le premier qui le contient déjà)
+            if chunk_id == 0:
+                full_chunk_text = chunk_text_content
+            else:
+                full_chunk_text = header_prefix + chunk_text_content
+
             chunks.append({
                 "id": chunk_id,
-                "text": chunk_text_content,
+                "text": full_chunk_text,
+                "text_without_header": chunk_text_content,  # Pour l'affichage
                 "start": start,
-                "end": end
+                "end": end,
+                "has_header": chunk_id > 0
             })
             chunk_id += 1
-        
-        # CORRECTION : s'assurer que start progresse toujours
-        # Évite les boucles infinies si le chunk est très court
+
+        # S'assurer que start progresse toujours
         next_start = end - overlap
         if next_start <= start:
-            # Si on ne progresse pas, avancer d'au moins 1 caractère
             start = start + 1
         else:
             start = next_start
-    
+
     return chunks
 
 
@@ -532,45 +671,244 @@ def add_to_vectorstore(chunks: list[dict], filename: str):
     return len(chunks)
 
 
-def search_similar(query: str, n_results: int = 3) -> list[dict]:
+# =============================================================================
+# RECHERCHE HYBRIDE (BM25 + Sémantique)
+# =============================================================================
+
+# Table de normalisation des caractères français (ligatures, accents)
+CHAR_NORMALIZATIONS = {
+    'œ': 'oe', 'Œ': 'OE',
+    'æ': 'ae', 'Æ': 'AE',
+    'ç': 'c', 'Ç': 'C',
+    'é': 'e', 'É': 'E',
+    'è': 'e', 'È': 'E',
+    'ê': 'e', 'Ê': 'E',
+    'ë': 'e', 'Ë': 'E',
+    'à': 'a', 'À': 'A',
+    'â': 'a', 'Â': 'A',
+    'ä': 'a', 'Ä': 'A',
+    'î': 'i', 'Î': 'I',
+    'ï': 'i', 'Ï': 'I',
+    'ô': 'o', 'Ô': 'O',
+    'ö': 'o', 'Ö': 'O',
+    'ù': 'u', 'Ù': 'U',
+    'û': 'u', 'Û': 'U',
+    'ü': 'u', 'Ü': 'U',
+    'ÿ': 'y', 'Ÿ': 'Y',
+    ''': "'", ''': "'", '"': '"', '"': '"',
+    '—': '-', '–': '-',
+    '\u202f': ' ',  # narrow no-break space
+    '\xa0': ' ',    # non-breaking space
+}
+
+
+def normalize_text_for_search(text: str) -> str:
     """
-    Recherche les chunks les plus similaires à la requête.
-    
+    Normalise un texte pour la recherche : ligatures, accents, espaces spéciaux.
+
+    Args:
+        text: Texte à normaliser
+
+    Returns:
+        Texte normalisé
+    """
+    for char, replacement in CHAR_NORMALIZATIONS.items():
+        text = text.replace(char, replacement)
+    return text
+
+
+def tokenize(text: str) -> list[str]:
+    """
+    Tokenize un texte en mots (version simple pour le français).
+    Applique la normalisation des caractères avant tokenization.
+
+    Args:
+        text: Texte à tokenizer
+
+    Returns:
+        Liste de tokens en minuscules normalisés
+    """
+    # Normaliser les caractères spéciaux (ligatures, accents)
+    text = normalize_text_for_search(text)
+    # Supprimer la ponctuation et mettre en minuscules
+    text = re.sub(r'[^\w\s]', ' ', text.lower())
+    # Supprimer les mots vides français courants (versions normalisées)
+    stop_words = {'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'et', 'est',
+                  'en', 'que', 'qui', 'dans', 'pour', 'sur', 'avec', 'ce', 'cette',
+                  'au', 'aux', 'a', 'son', 'sa', 'ses', 'se', 'ou', 'ne', 'pas',
+                  'plus', 'par', 'il', 'elle', 'ils', 'elles', 'nous', 'vous', 'je',
+                  'tu', 'on', 'etre', 'avoir', 'faire', 'tout', 'tous', 'si', 'mais'}
+    tokens = [word for word in text.split() if word and word not in stop_words and len(word) > 1]
+    return tokens
+
+
+def compute_bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
+    """
+    Calcule les scores BM25 pour une requête sur un ensemble de documents.
+
+    Args:
+        query: La requête utilisateur
+        documents: Liste des documents à scorer
+        k1: Paramètre de saturation des termes (défaut 1.5)
+        b: Paramètre de normalisation par longueur (défaut 0.75)
+
+    Returns:
+        Liste des scores BM25 pour chaque document
+    """
+    if not documents:
+        return []
+
+    # Tokenizer la requête et les documents
+    query_tokens = tokenize(query)
+    doc_tokens_list = [tokenize(doc) for doc in documents]
+
+    # Calculer les statistiques du corpus
+    n_docs = len(documents)
+    avg_doc_len = sum(len(tokens) for tokens in doc_tokens_list) / n_docs if n_docs > 0 else 1
+
+    # Calculer le DF (document frequency) pour chaque terme
+    df = Counter()
+    for doc_tokens in doc_tokens_list:
+        unique_tokens = set(doc_tokens)
+        for token in unique_tokens:
+            df[token] += 1
+
+    # Calculer le score BM25 pour chaque document
+    scores = []
+    for doc_tokens in doc_tokens_list:
+        score = 0.0
+        doc_len = len(doc_tokens)
+        tf = Counter(doc_tokens)
+
+        for term in query_tokens:
+            if term not in tf:
+                continue
+
+            # IDF avec smoothing
+            idf = math.log((n_docs - df[term] + 0.5) / (df[term] + 0.5) + 1)
+
+            # TF normalisé par BM25
+            term_freq = tf[term]
+            tf_norm = (term_freq * (k1 + 1)) / (term_freq + k1 * (1 - b + b * doc_len / avg_doc_len))
+
+            score += idf * tf_norm
+
+        scores.append(score)
+
+    return scores
+
+
+def normalize_scores(scores: list[float]) -> list[float]:
+    """
+    Normalise les scores entre 0 et 1 avec min-max scaling.
+
+    Args:
+        scores: Liste des scores bruts
+
+    Returns:
+        Liste des scores normalisés
+    """
+    if not scores:
+        return []
+
+    min_score = min(scores)
+    max_score = max(scores)
+
+    if max_score == min_score:
+        return [1.0] * len(scores)
+
+    return [(s - min_score) / (max_score - min_score) for s in scores]
+
+
+def search_similar(query: str, n_results: int = 7, hybrid: bool = True, semantic_weight: float = 0.5) -> list[dict]:
+    """
+    Recherche hybride combinant recherche sémantique et BM25.
+
     Args:
         query: La question de l'utilisateur
         n_results: Nombre de résultats à retourner
-    
+        hybrid: Activer la recherche hybride (sinon sémantique pure)
+        semantic_weight: Poids de la recherche sémantique (0-1)
+
     Returns:
         Liste des chunks les plus pertinents
     """
     collection = get_chroma_collection()
-    
+
     # Vérifier si la collection contient des documents
     if collection.count() == 0:
         return []
-    
+
+    # Récupérer plus de résultats pour le re-ranking hybride
+    fetch_count = min(n_results * 3, collection.count()) if hybrid else min(n_results, collection.count())
+
     # Créer l'embedding de la requête via Ollama
     query_embedding = get_embedding(query)
-    
-    # Version précédente avec sentence-transformers (conservée en commentaire)
-    # model = get_embedding_model()
-    # query_embedding = model.encode([query])[0].tolist()
-    
-    # Rechercher les documents similaires
+
+    # Recherche sémantique
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count())
+        n_results=fetch_count
     )
-    
-    # Formater les résultats
-    similar_chunks = []
-    for i, doc in enumerate(results["documents"][0]):
-        similar_chunks.append({
-            "text": doc,
-            "metadata": results["metadatas"][0][i],
-            "distance": results["distances"][0][i] if results["distances"] else None
+
+    if not results["documents"] or not results["documents"][0]:
+        return []
+
+    documents = results["documents"][0]
+    metadatas = results["metadatas"][0]
+    distances = results["distances"][0] if results["distances"] else [0] * len(documents)
+
+    # Si pas de recherche hybride, retourner directement
+    if not hybrid or semantic_weight >= 1.0:
+        similar_chunks = []
+        for i, doc in enumerate(documents[:n_results]):
+            similar_chunks.append({
+                "text": doc,
+                "metadata": metadatas[i],
+                "distance": distances[i],
+                "score_type": "semantic"
+            })
+        return similar_chunks
+
+    # Recherche hybride : combiner sémantique + BM25
+    # Convertir les distances cosinus en scores (1 - distance pour cosinus)
+    semantic_scores = [1 - d for d in distances]
+    semantic_scores_norm = normalize_scores(semantic_scores)
+
+    # Calculer les scores BM25
+    bm25_scores = compute_bm25_scores(query, documents)
+    bm25_scores_norm = normalize_scores(bm25_scores)
+
+    # Combiner les scores
+    keyword_weight = 1 - semantic_weight
+    combined_scores = []
+    for i in range(len(documents)):
+        combined = (semantic_weight * semantic_scores_norm[i] +
+                   keyword_weight * bm25_scores_norm[i])
+        combined_scores.append({
+            "index": i,
+            "combined_score": combined,
+            "semantic_score": semantic_scores_norm[i],
+            "bm25_score": bm25_scores_norm[i]
         })
-    
+
+    # Trier par score combiné décroissant
+    combined_scores.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Retourner les meilleurs résultats
+    similar_chunks = []
+    for item in combined_scores[:n_results]:
+        i = item["index"]
+        similar_chunks.append({
+            "text": documents[i],
+            "metadata": metadatas[i],
+            "distance": distances[i],
+            "combined_score": item["combined_score"],
+            "semantic_score": item["semantic_score"],
+            "bm25_score": item["bm25_score"],
+            "score_type": "hybrid"
+        })
+
     return similar_chunks
 
 # Configuration de la page
@@ -680,25 +1018,62 @@ with st.sidebar:
     
     # Section RAG - Upload de documents
     st.header("📚 Base de connaissances")
-    
+
+    # Afficher les documents déjà indexés (persistants)
+    indexed_docs = get_indexed_documents()
+    collection = get_chroma_collection()
+
+    if indexed_docs:
+        st.success(f"💾 Base persistante: {collection.count()} chunks de {len(indexed_docs)} document(s)")
+        with st.expander("📂 Documents indexés", expanded=False):
+            metadata = load_documents_metadata()
+            for doc_name in indexed_docs:
+                doc_meta = metadata.get(doc_name, {})
+                chunks_count = doc_meta.get("chunks_count", "?")
+                indexed_at = doc_meta.get("indexed_at", "date inconnue")
+                if indexed_at != "date inconnue":
+                    # Formater la date
+                    try:
+                        dt = datetime.fromisoformat(indexed_at)
+                        indexed_at = dt.strftime("%d/%m/%Y %H:%M")
+                    except:
+                        pass
+                st.caption(f"📄 **{doc_name}** - {chunks_count} chunks (indexé le {indexed_at})")
+    else:
+        st.info("📭 Aucun document indexé. Chargez des documents pour commencer.")
+
     # Paramètres RAG
     with st.expander("⚙️ Paramètres RAG", expanded=False):
         rag_enabled = st.toggle("Activer le RAG", value=True)
         rag_exclusive = st.toggle(
-            "🔒 Mode exclusif", 
+            "🔒 Mode exclusif",
             value=False,
             help="Si activé, le chatbot ne répond QU'avec les informations des documents. Il refusera de répondre si l'info n'est pas trouvée.",
             disabled=not rag_enabled
         )
-        chunk_size = st.slider("Taille des chunks", 200, 1000, 500, 50)
-        chunk_overlap = st.slider("Chevauchement", 0, 200, 50, 10)
-        n_results = st.slider("Nombre de sources", 1, 10, 3)
+        chunk_size = st.slider("Taille des chunks", 200, 1500, 800, 50,
+            help="Taille cible des chunks. Plus grand = plus de contexte par chunk")
+        chunk_overlap = st.slider("Chevauchement", 0, 300, 100, 10,
+            help="Chevauchement entre chunks pour éviter de couper des phrases")
+        n_results = st.slider("Nombre de sources", 1, 15, 7,
+            help="Nombre de chunks à récupérer. Plus = meilleure couverture mais plus de tokens")
+
+        st.divider()
+        st.subheader("Recherche hybride")
+        hybrid_enabled = st.toggle("Activer la recherche hybride", value=True,
+            help="Combine recherche sémantique (embeddings) et recherche par mots-clés (BM25)")
+        semantic_weight = st.slider("Poids sémantique", 0.0, 1.0, 0.5, 0.1,
+            help="0 = mots-clés uniquement, 1 = sémantique uniquement, 0.5 = équilibré",
+            disabled=not hybrid_enabled)
+
         st.session_state.rag_params = {
             "enabled": rag_enabled,
             "exclusive": rag_exclusive if rag_enabled else False,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
-            "n_results": n_results
+            "n_results": n_results,
+            "hybrid_enabled": hybrid_enabled,
+            "semantic_weight": semantic_weight if hybrid_enabled else 1.0
         }
     
     uploaded_files = st.file_uploader(
@@ -716,7 +1091,9 @@ with st.sidebar:
             st.session_state.documents_text = {}
 
         for file in uploaded_files:
-            if file.name not in st.session_state.documents_text:
+            # Vérifier si le document est déjà indexé (session OU base persistante)
+            already_indexed = file.name in st.session_state.documents_text or file.name in indexed_docs
+            if not already_indexed:
                 # SÉCURITÉ: Valider le fichier avant traitement
                 is_valid, validation_msg = validate_uploaded_file(file)
                 if not is_valid:
@@ -749,32 +1126,41 @@ with st.sidebar:
                         "text": text,
                         "chunks": chunks_with_embeddings
                     }
+                    # Sauvegarder les métadonnées sur disque
+                    save_documents_metadata(st.session_state.documents_text)
                 except Exception as e:
                     error_msg = handle_error(e, f"Traitement fichier {file.name}")
                     st.error(f"❌ Erreur lors du traitement de {file.name}: {error_msg}")
             
-            # Afficher un aperçu (seulement si le fichier a été traité avec succès)
+            # Afficher un aperçu (seulement si le fichier a été traité dans cette session)
             if file.name in st.session_state.documents_text:
                 doc_data = st.session_state.documents_text[file.name]
                 text = doc_data["text"]
                 chunks = doc_data["chunks"]
 
-                with st.expander(f"📄 {file.name} ({len(chunks)} chunks)"):
+                with st.expander(f"📄 {file.name} ({len(chunks)} chunks) - Nouveau"):
                     st.caption(f"{len(text)} caractères → {len(chunks)} chunks vectorisés")
                     st.text(text[:300] + "..." if len(text) > 300 else text)
-        
-        # Afficher le nombre total de documents indexés
+            elif file.name in indexed_docs:
+                # Document déjà dans la base persistante
+                st.caption(f"📄 {file.name} - ✅ Déjà indexé (base persistante)")
+
+        # Actualiser la collection après les nouveaux ajouts
         collection = get_chroma_collection()
-        st.success(f"✅ {collection.count()} chunks indexés au total")
+        st.success(f"✅ {collection.count()} chunks indexés au total (persistant)")
         
         # Bouton pour réinitialiser la base
         if st.button("🔄 Réinitialiser la base"):
-            # Réinitialiser ChromaDB
-            client = chromadb.Client(Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            ))
-            client.reset()
+            # Réinitialiser ChromaDB persistant
+            client = get_chroma_client()
+            # Supprimer la collection
+            try:
+                client.delete_collection("documents")
+            except Exception:
+                pass
+            # Supprimer les fichiers de métadonnées
+            if os.path.exists(METADATA_FILE):
+                os.remove(METADATA_FILE)
             st.session_state.documents_text = {}
             st.cache_resource.clear()
             st.rerun()
@@ -808,23 +1194,45 @@ if prompt := st.chat_input("Posez votre question..."):
         # Recherche RAG
         context = ""
         similar_chunks = []
-        rag_params = st.session_state.get("rag_params", {"enabled": True, "n_results": 3})
+        rag_params = st.session_state.get("rag_params", {
+            "enabled": True,
+            "n_results": 7,
+            "hybrid_enabled": True,
+            "semantic_weight": 0.5
+        })
 
         if rag_params.get("enabled", True):
-            similar_chunks = search_similar(prompt, n_results=rag_params["n_results"])
+            similar_chunks = search_similar(
+                prompt,
+                n_results=rag_params.get("n_results", 7),
+                hybrid=rag_params.get("hybrid_enabled", True),
+                semantic_weight=rag_params.get("semantic_weight", 0.5)
+            )
 
         # SÉCURITÉ: Construire un contexte sécurisé avec sanitization
         if similar_chunks:
             context = build_safe_context(similar_chunks)
-        
+
         # Appel à Aristote
         with st.chat_message("assistant"):
             # Afficher les sources utilisées
             if similar_chunks:
                 with st.expander("📚 Sources consultées", expanded=False):
                     for chunk in similar_chunks:
-                        st.caption(f"**{chunk['metadata']['filename']}** (score: {1 - chunk['distance']:.2f})")
-                        st.text(chunk["text"][:200] + "...")
+                        # Affichage adapté selon le type de recherche
+                        if chunk.get("score_type") == "hybrid":
+                            score_info = f"combiné: {chunk['combined_score']:.2f} (sem: {chunk['semantic_score']:.2f}, bm25: {chunk['bm25_score']:.2f})"
+                        else:
+                            score_info = f"score: {1 - chunk['distance']:.2f}"
+                        st.caption(f"**{chunk['metadata']['filename']}** ({score_info})")
+                        # Afficher le texte sans le header pour plus de lisibilité
+                        display_text = chunk["text"]
+                        if "[CONTEXTE DOCUMENT]" in display_text:
+                            # Extraire seulement le contenu après le header
+                            parts = display_text.split("[FIN CONTEXTE]")
+                            if len(parts) > 1:
+                                display_text = parts[1].strip()
+                        st.text(display_text[:250] + "..." if len(display_text) > 250 else display_text)
             
             # Vérifier le mode exclusif
             is_exclusive = rag_params.get("exclusive", False)
