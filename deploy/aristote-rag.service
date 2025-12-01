@@ -1,0 +1,43 @@
+[Unit]
+Description=Aristote RAG Chatbot - Multi-Provider Edition
+Documentation=https://github.com/jedeth/aristote-rag-chatbot-demo-DRASI
+After=network-online.target
+Wants=network-online.target
+# Si tu utilises Docker au lieu de Podman, décommenter:
+# After=docker.service
+# Requires=docker.service
+
+[Service]
+Type=simple
+User=aristote
+Group=aristote
+WorkingDirectory=/opt/aristote-rag
+
+# Environnement
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/opt/aristote-rag/.env
+
+# Commandes (Podman - natif sur RHEL 9)
+ExecStartPre=/usr/bin/podman-compose pull
+ExecStart=/usr/bin/podman-compose up --remove-orphans
+ExecStop=/usr/bin/podman-compose down
+ExecReload=/usr/bin/podman-compose restart
+
+# Redémarrage automatique
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+# Sécurité
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aristote-rag /var/lib/aristote-rag
+
+# Limites
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
