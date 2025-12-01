@@ -232,6 +232,9 @@ load_dotenv()
 # Modèle d'embeddings Ollama (local, rapide, souverain)
 EMBEDDING_MODEL = "nomic-embed-text"
 
+# Configuration Ollama (support Docker via variable d'environnement)
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 # Version précédente avec sentence-transformers (conservée en commentaire)
 # EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 # @st.cache_resource
@@ -251,14 +254,16 @@ def get_embedding(text: str) -> list[float]:
         Vecteur d'embedding (liste de floats)
     """
     try:
-        response = ollama.embeddings(
+        # Créer un client Ollama avec l'hôte configuré (support Docker)
+        client = ollama.Client(host=OLLAMA_HOST)
+        response = client.embeddings(
             model=EMBEDDING_MODEL,
             prompt=text
         )
         return response["embedding"]
     except Exception as e:
         error_msg = handle_error(e, "Ollama embeddings")
-        st.error(f"Erreur Ollama: {error_msg}. Vérifiez qu'Ollama est lancé et que le modèle {EMBEDDING_MODEL} est installé.")
+        st.error(f"Erreur Ollama: {error_msg}. Vérifiez qu'Ollama est lancé ({OLLAMA_HOST}) et que le modèle {EMBEDDING_MODEL} est installé.")
         raise
 
 

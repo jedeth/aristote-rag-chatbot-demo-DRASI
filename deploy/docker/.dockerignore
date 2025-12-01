@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv
+
+# Build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Données locales
+data/
+chroma_db/
+*.log
+
+# Documentation build
+docs/_build/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Déploiement
+deploy/
+*.spec
+installer_output/
+
+# Secrets
+.env
+*.pem
+*.key

@@ -1,0 +1,128 @@
+# =============================================================================
+# Docker Compose - Aristote RAG Chatbot
+# Configuration complète avec Ollama pour les embeddings
+# =============================================================================
+
+services:
+  # =========================================================================
+  # Service Ollama (embeddings locaux)
+  # =========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chatbot-ollama
+    restart: unless-stopped
+
+    # GPU support (décommenter si GPU NVIDIA disponible)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    volumes:
+      # Persistance des modèles téléchargés
+      - ollama_data:/root/.ollama
+
+    ports:
+      - "11434:11434"
+
+    # Healthcheck Ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    networks:
+      - chatbot-network
+
+  # =========================================================================
+  # Service de téléchargement du modèle d'embeddings
+  # =========================================================================
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: chatbot-ollama-pull
+
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+    # Télécharger le modèle d'embeddings
+    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+
+    environment:
+      - OLLAMA_HOST=ollama:11434
+
+    networks:
+      - chatbot-network
+
+    # Ce conteneur s'arrête après avoir téléchargé le modèle
+    restart: "no"
+
+  # =========================================================================
+  # Application Chatbot RAG
+  # =========================================================================
+  chatbot:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: chatbot-rag
+    restart: unless-stopped
+
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+
+    environment:
+      # Configuration API Aristote (à personnaliser)
+      - ARISTOTE_API_BASE=${ARISTOTE_API_BASE:-https://llm.ilaas.fr/v1}
+      - ARISTOTE_API_KEY=${ARISTOTE_API_KEY:-}
+
+      # Configuration Ollama (pointe vers le service ollama)
+      - OLLAMA_HOST=http://ollama:11434
+
+    volumes:
+      # Persistance des données
+      - chatbot_data:/app/data
+      - chroma_db:/app/chroma_db
+      - chatbot_logs:/app/logs
+
+    ports:
+      - "8501:8501"
+
+    networks:
+      - chatbot-network
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# =============================================================================
+# Volumes persistants
+# =============================================================================
+volumes:
+  ollama_data:
+    name: chatbot-ollama-data
+  chatbot_data:
+    name: chatbot-app-data
+  chroma_db:
+    name: chatbot-chroma-db
+  chatbot_logs:
+    name: chatbot-logs
+
+# =============================================================================
+# Réseau isolé
+# =============================================================================
+networks:
+  chatbot-network:
+    name: chatbot-network
+    driver: bridge
