@@ -42,6 +42,10 @@ from providers import (
     AlbertLLM,
 )
 
+# Import des providers vision pour l'analyse d'images
+from providers.vision.albert_vision import AlbertVision
+from providers.vision.pdf_image_extractor import PDFImageExtractor
+
 # =============================================================================
 # CONFIGURATION SÉCURITÉ
 # =============================================================================
@@ -566,6 +570,54 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     return text
 
 
+def extract_images_from_pdf(
+    file_bytes: bytes,
+    filename: str,
+    max_images: int = 20
+) -> list[dict]:
+    """
+    Extrait et analyse les images d'un fichier PDF avec Albert Vision.
+
+    Args:
+        file_bytes: Contenu du fichier PDF
+        filename: Nom du fichier source
+        max_images: Nombre maximum d'images à analyser
+
+    Returns:
+        Liste de chunks d'images analysées
+    """
+    # Vérifier si l'analyse d'images est activée
+    analyze_images = st.session_state.get("analyze_images", False)
+    if not analyze_images:
+        return []
+
+    # Vérifier si la clé Albert est disponible
+    albert_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+    if not albert_key:
+        logging.warning("Analyse d'images désactivée: ALBERT_API_KEY non configurée")
+        return []
+
+    image_chunks = []
+    try:
+        # Créer le provider de vision
+        vision = AlbertVision(api_key=albert_key)
+        extractor = PDFImageExtractor(vision_provider=vision)
+
+        # Extraire et analyser les images
+        analyzed_images = extractor.extract_and_analyze_all(file_bytes, max_images)
+
+        # Générer les chunks
+        image_chunks = extractor.generate_image_chunks(analyzed_images, filename)
+
+        if image_chunks:
+            logging.info(f"PDF {filename}: {len(image_chunks)} images analysées")
+
+    except Exception as e:
+        logging.warning(f"Erreur extraction images PDF {filename}: {e}")
+
+    return image_chunks
+
+
 def extract_text_from_docx(file_bytes: bytes) -> str:
     """Extrait le texte d'un fichier DOCX, y compris les tableaux."""
     doc = Document(io.BytesIO(file_bytes))
@@ -589,6 +641,93 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
             text_parts.append("\n".join(table_text))
 
     return "\n".join(text_parts)
+
+
+def extract_images_from_docx(
+    file_bytes: bytes,
+    filename: str,
+    max_images: int = 20
+) -> list[dict]:
+    """
+    Extrait et analyse les images d'un fichier DOCX avec Albert Vision.
+
+    Args:
+        file_bytes: Contenu du fichier DOCX
+        filename: Nom du fichier source
+        max_images: Nombre maximum d'images à analyser
+
+    Returns:
+        Liste de chunks d'images analysées
+    """
+    # Vérifier si l'analyse d'images est activée
+    analyze_images = st.session_state.get("analyze_images", False)
+    if not analyze_images:
+        return []
+
+    # Vérifier si la clé Albert est disponible
+    albert_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+    if not albert_key:
+        logging.warning("Analyse d'images désactivée: ALBERT_API_KEY non configurée")
+        return []
+
+    image_chunks = []
+    try:
+        # Créer le provider de vision
+        vision = AlbertVision(api_key=albert_key)
+
+        # Ouvrir le document DOCX
+        doc = Document(io.BytesIO(file_bytes))
+
+        # Les images DOCX sont stockées dans les "related parts"
+        image_index = 0
+        for rel in doc.part.rels.values():
+            if "image" in rel.reltype:
+                if image_index >= max_images:
+                    break
+
+                try:
+                    # Récupérer les bytes de l'image
+                    image_part = rel.target_part
+                    image_bytes = image_part.blob
+
+                    # Filtrer les petites images (icônes, logos)
+                    # On ne peut pas facilement obtenir les dimensions sans PIL,
+                    # donc on filtre par taille de fichier (> 5KB)
+                    if len(image_bytes) < 5000:
+                        continue
+
+                    # Analyser l'image avec Albert Vision
+                    description = vision.analyze_image(
+                        image_bytes,
+                        prompt="Décris cette image de document. "
+                               "Est-ce un tableau, un graphique, un schéma ou autre chose ? "
+                               "Extrais les informations importantes."
+                    )
+
+                    # Créer le chunk
+                    image_chunks.append({
+                        "text": f"[IMAGE {image_index + 1} - Document {filename}]\n{description}",
+                        "metadata": {
+                            "filename": filename,
+                            "type": "image",
+                            "is_visual_content": True,
+                            "image_index": image_index,
+                        },
+                    })
+
+                    image_index += 1
+
+                except Exception as img_error:
+                    logging.warning(f"Erreur analyse image DOCX {image_index}: {img_error}")
+                    continue
+
+        if image_chunks:
+            logging.info(f"DOCX {filename}: {len(image_chunks)} images analysées")
+
+    except Exception as e:
+        logging.warning(f"Erreur extraction images DOCX {filename}: {e}")
+
+    return image_chunks
 
 
 def extract_text(uploaded_file) -> str:
@@ -1269,6 +1408,27 @@ with st.sidebar:
             help="0 = mots-clés uniquement, 1 = sémantique uniquement, 0.5 = équilibré",
             disabled=not hybrid_enabled)
 
+        st.divider()
+        st.subheader("🖼️ Analyse d'images")
+        # Vérifier si Albert API est configurée
+        albert_configured = bool(st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY"))
+        analyze_images = st.toggle(
+            "Analyser les images des documents",
+            value=st.session_state.get("analyze_images", False),
+            help="Utilise Albert Vision pour analyser les images, tableaux et graphiques dans les PDF et DOCX. Nécessite une clé API Albert.",
+            disabled=not albert_configured
+        )
+        if not albert_configured:
+            st.caption("⚠️ Clé API Albert requise pour l'analyse d'images")
+        else:
+            st.caption("📸 Les images seront analysées avec albert-large (vision)")
+        st.session_state.analyze_images = analyze_images
+
+        max_images = st.slider("Images max par document", 1, 50, 20,
+            help="Nombre maximum d'images à analyser par document",
+            disabled=not analyze_images)
+        st.session_state.max_images = max_images
+
         st.session_state.rag_params = {
             "enabled": rag_enabled,
             "exclusive": rag_exclusive if rag_enabled else False,
@@ -1276,7 +1436,9 @@ with st.sidebar:
             "chunk_overlap": chunk_overlap,
             "n_results": n_results,
             "hybrid_enabled": hybrid_enabled,
-            "semantic_weight": semantic_weight if hybrid_enabled else 1.0
+            "semantic_weight": semantic_weight if hybrid_enabled else 1.0,
+            "analyze_images": analyze_images,
+            "max_images": max_images
         }
     
     uploaded_files = st.file_uploader(
@@ -1312,22 +1474,66 @@ with st.sidebar:
 
                 try:
                     with st.spinner(f"Extraction de {file.name}..."):
-                        text = extract_text(file)
+                        # Lire le fichier une seule fois
+                        file_bytes = file.read()
+                        file.seek(0)  # Remettre le curseur au début
+
+                        # Extraire le texte
+                        if file.name.lower().endswith(".pdf"):
+                            text = extract_text_from_pdf(file_bytes)
+                        elif file.name.lower().endswith(".docx"):
+                            text = extract_text_from_docx(file_bytes)
+                        else:
+                            text = ""
+
                         chunks = chunk_text(
                             text,
                             chunk_size=params["chunk_size"],
                             overlap=params["chunk_overlap"]
                         )
 
-                    with st.spinner(f"Création des embeddings ({len(chunks)} chunks)..."):
+                    # Extraire et analyser les images si l'option est activée
+                    image_chunks = []
+                    if params.get("analyze_images", False):
+                        max_images = params.get("max_images", 20)
+                        with st.spinner(f"Analyse des images de {file.name}..."):
+                            if file.name.lower().endswith(".pdf"):
+                                image_chunks = extract_images_from_pdf(file_bytes, file.name, max_images)
+                            elif file.name.lower().endswith(".docx"):
+                                image_chunks = extract_images_from_docx(file_bytes, file.name, max_images)
+
+                        if image_chunks:
+                            st.info(f"🖼️ {len(image_chunks)} image(s) analysée(s) dans {file.name}")
+
+                    # Créer les embeddings pour les chunks de texte
+                    total_chunks = len(chunks) + len(image_chunks)
+                    with st.spinner(f"Création des embeddings ({total_chunks} chunks)..."):
                         chunks_with_embeddings = create_embeddings(chunks)
+
+                        # Créer les embeddings pour les chunks d'images
+                        if image_chunks:
+                            # Convertir les image_chunks au format attendu par create_embeddings
+                            image_chunks_formatted = [
+                                {"id": f"img_{i}", "text": ic["text"]}
+                                for i, ic in enumerate(image_chunks)
+                            ]
+                            image_chunks_with_embeddings = create_embeddings(image_chunks_formatted)
+
+                            # Restaurer les métadonnées des images
+                            for i, ic in enumerate(image_chunks_with_embeddings):
+                                ic["metadata"] = image_chunks[i]["metadata"]
 
                     with st.spinner(f"Indexation dans la base vectorielle..."):
                         add_to_vectorstore(chunks_with_embeddings, file.name)
 
+                        # Indexer aussi les chunks d'images
+                        if image_chunks:
+                            add_to_vectorstore(image_chunks_with_embeddings, f"{file.name}_images")
+
                     st.session_state.documents_text[file.name] = {
                         "text": text,
-                        "chunks": chunks_with_embeddings
+                        "chunks": chunks_with_embeddings,
+                        "image_chunks": image_chunks_with_embeddings if image_chunks else []
                     }
                     # Sauvegarder les métadonnées sur disque
                     save_documents_metadata(st.session_state.documents_text)
@@ -1340,9 +1546,18 @@ with st.sidebar:
                 doc_data = st.session_state.documents_text[file.name]
                 text = doc_data["text"]
                 chunks = doc_data["chunks"]
+                image_chunks = doc_data.get("image_chunks", [])
 
-                with st.expander(f"📄 {file.name} ({len(chunks)} chunks) - Nouveau"):
-                    st.caption(f"{len(text)} caractères → {len(chunks)} chunks vectorisés")
+                # Construire le titre avec les infos images si présentes
+                title = f"📄 {file.name} ({len(chunks)} chunks"
+                if image_chunks:
+                    title += f" + {len(image_chunks)} images"
+                title += ") - Nouveau"
+
+                with st.expander(title):
+                    st.caption(f"{len(text)} caractères → {len(chunks)} chunks de texte vectorisés")
+                    if image_chunks:
+                        st.caption(f"🖼️ {len(image_chunks)} images analysées et indexées")
                     st.text(text[:300] + "..." if len(text) > 300 else text)
             elif file.name in indexed_docs:
                 # Document déjà dans la base persistante
