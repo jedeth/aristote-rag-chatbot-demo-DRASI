@@ -567,9 +567,28 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    """Extrait le texte d'un fichier DOCX."""
+    """Extrait le texte d'un fichier DOCX, y compris les tableaux."""
     doc = Document(io.BytesIO(file_bytes))
-    return "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    text_parts = []
+
+    # Extraire les paragraphes
+    for paragraph in doc.paragraphs:
+        if paragraph.text.strip():
+            text_parts.append(paragraph.text)
+
+    # Extraire le contenu des tableaux
+    for table in doc.tables:
+        table_text = []
+        for row in table.rows:
+            row_cells = [cell.text.strip() for cell in row.cells]
+            # Joindre les cellules avec " | " pour garder la structure
+            row_text = " | ".join(row_cells)
+            if row_text.strip():
+                table_text.append(row_text)
+        if table_text:
+            text_parts.append("\n".join(table_text))
+
+    return "\n".join(text_parts)
 
 
 def extract_text(uploaded_file) -> str:
