@@ -34,6 +34,14 @@ except ImportError:
     MAGIC_AVAILABLE = False
     logging.warning("python-magic non disponible. Validation MIME désactivée.")
 
+# Import des providers multi-provider
+from providers import (
+    AlbertEmbeddings,
+    OllamaEmbeddings,
+    AristoteLLM,
+    AlbertLLM,
+)
+
 # =============================================================================
 # CONFIGURATION SÉCURITÉ
 # =============================================================================
@@ -254,7 +262,7 @@ EMBEDDING_MODEL = "nomic-embed-text"
 
 def get_embedding(text: str) -> list[float]:
     """
-    Génère l'embedding d'un texte via Ollama.
+    Génère l'embedding d'un texte via le provider sélectionné (Ollama ou Albert).
 
     Args:
         text: Texte à vectoriser
@@ -262,16 +270,41 @@ def get_embedding(text: str) -> list[float]:
     Returns:
         Vecteur d'embedding (liste de floats)
     """
+    embedding_provider = st.session_state.get("embedding_provider", "ollama")
+
     try:
-        response = ollama.embeddings(
-            model=EMBEDDING_MODEL,
-            prompt=text
-        )
-        return response["embedding"]
+        if embedding_provider == "albert":
+            # Utiliser Albert API pour les embeddings
+            albert_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+            if not albert_key:
+                st.error("Clé API Albert requise pour les embeddings Albert")
+                raise ValueError("ALBERT_API_KEY non configurée")
+
+            embedder = AlbertEmbeddings(api_key=albert_key)
+            return embedder.embed_query(text)
+        else:
+            # Utiliser Ollama (par défaut)
+            response = ollama.embeddings(
+                model=EMBEDDING_MODEL,
+                prompt=text
+            )
+            return response["embedding"]
     except Exception as e:
-        error_msg = handle_error(e, "Ollama embeddings")
-        st.error(f"Erreur Ollama: {error_msg}. Vérifiez qu'Ollama est lancé et que le modèle {EMBEDDING_MODEL} est installé.")
+        error_msg = handle_error(e, f"Embeddings ({embedding_provider})")
+        if embedding_provider == "albert":
+            st.error(f"Erreur Albert Embeddings: {error_msg}")
+        else:
+            st.error(f"Erreur Ollama: {error_msg}. Vérifiez qu'Ollama est lancé et que le modèle {EMBEDDING_MODEL} est installé.")
         raise
+
+
+def get_embedding_dimension() -> int:
+    """Retourne la dimension des embeddings selon le provider sélectionné."""
+    embedding_provider = st.session_state.get("embedding_provider", "ollama")
+    if embedding_provider == "albert":
+        return 1024  # Albert embeddings-small
+    else:
+        return 768  # Ollama nomic-embed-text
 
 
 @st.cache_resource
@@ -382,21 +415,43 @@ def get_indexed_documents() -> list[str]:
 
 def get_client(api_key: str = None):
     """
-    Initialise le client OpenAI pour Aristote Dispatcher.
+    Initialise le client OpenAI selon le provider LLM sélectionné.
 
     Args:
         api_key: Clé API (depuis session_state, pas os.environ)
+
+    Returns:
+        Client OpenAI compatible (Aristote ou Albert)
     """
-    # Priorité: paramètre > session_state > env
-    key = api_key or st.session_state.get("api_key") or os.getenv("ARISTOTE_API_KEY", "")
+    llm_provider = st.session_state.get("llm_provider", "aristote")
 
-    if not key:
-        raise ValueError("Clé API non configurée")
+    if llm_provider == "albert":
+        # Utiliser Albert API
+        key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY", "")
+        if not key:
+            raise ValueError("Clé API Albert non configurée")
+        return OpenAI(
+            api_key=key,
+            base_url="https://albert.api.etalab.gouv.fr/v1"
+        )
+    else:
+        # Utiliser Aristote (par défaut)
+        key = api_key or st.session_state.get("api_key") or os.getenv("ARISTOTE_API_KEY", "")
+        if not key:
+            raise ValueError("Clé API Aristote non configurée")
+        return OpenAI(
+            api_key=key,
+            base_url=os.getenv("ARISTOTE_API_BASE", "https://llm.ilaas.fr/v1")
+        )
 
-    return OpenAI(
-        api_key=key,
-        base_url=os.getenv("ARISTOTE_API_BASE", "https://llm.ilaas.fr/v1")
-    )
+
+def get_selected_model() -> str:
+    """Retourne le modèle sélectionné selon le provider LLM."""
+    llm_provider = st.session_state.get("llm_provider", "aristote")
+    if llm_provider == "albert":
+        return st.session_state.get("albert_model", "albert-large")
+    else:
+        return st.session_state.get("selected_model", "meta-llama/Llama-3.3-70B-Instruct")
 
 
 def test_api_connection(api_key: str, api_base: str) -> dict:
@@ -952,63 +1007,156 @@ if "session_id" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configuration")
 
-    # Gestion de la clé API - SÉCURISÉ: stockage dans session_state, pas os.environ
-    api_key = st.text_input(
-        "Clé API Aristote",
-        value=st.session_state.get("api_key", os.getenv("ARISTOTE_API_KEY", "")),
-        type="password",
-        help="Votre token d'authentification Aristote"
-    )
+    # ==========================================================================
+    # SECTION PROVIDERS (Multi-Provider)
+    # ==========================================================================
+    st.subheader("🔌 Providers")
 
-    # Configuration de l'URL API (optionnelle)
-    api_base = st.text_input(
-        "URL API (optionnel)",
-        value=os.getenv("ARISTOTE_API_BASE", "https://llm.ilaas.fr/v1"),
-        help="URL de base de l'API Aristote (laisser par défaut sauf si vous avez une URL spécifique)"
+    # Sélection du provider LLM
+    llm_provider = st.selectbox(
+        "Provider LLM",
+        options=["aristote", "albert"],
+        index=0 if st.session_state.get("llm_provider", "aristote") == "aristote" else 1,
+        help="Aristote (DRASI) ou Albert (Etalab) pour la génération de texte"
     )
-    if api_base:
-        os.environ["ARISTOTE_API_BASE"] = api_base
+    st.session_state.llm_provider = llm_provider
 
-    if api_key:
+    # Sélection du provider Embeddings
+    embedding_provider = st.selectbox(
+        "Provider Embeddings",
+        options=["ollama", "albert"],
+        index=0 if st.session_state.get("embedding_provider", "ollama") == "ollama" else 1,
+        help="Ollama (local) ou Albert (API) pour les embeddings"
+    )
+    st.session_state.embedding_provider = embedding_provider
+
+    # Avertissement si Ollama est sélectionné mais pas disponible
+    if embedding_provider == "ollama":
+        try:
+            ollama.list()
+        except Exception:
+            st.warning("⚠️ Ollama non détecté. Passez sur 'albert' ou installez Ollama.")
+
+    st.divider()
+
+    # ==========================================================================
+    # SECTION CLÉS API
+    # ==========================================================================
+    st.subheader("🔑 Clés API")
+
+    # Clé API Aristote (toujours affichée si LLM = aristote)
+    if llm_provider == "aristote":
+        api_key = st.text_input(
+            "Clé API Aristote",
+            value=st.session_state.get("api_key", os.getenv("ARISTOTE_API_KEY", "")),
+            type="password",
+            help="Votre token d'authentification Aristote"
+        )
+        # Configuration de l'URL API (optionnelle)
+        api_base = st.text_input(
+            "URL API Aristote",
+            value=os.getenv("ARISTOTE_API_BASE", "https://llm.ilaas.fr/v1"),
+            help="URL de base de l'API Aristote"
+        )
+        if api_base:
+            os.environ["ARISTOTE_API_BASE"] = api_base
+    else:
+        api_key = None
+        api_base = None
+
+    # Clé API Albert (affichée si LLM = albert OU embeddings = albert)
+    if llm_provider == "albert" or embedding_provider == "albert":
+        albert_api_key = st.text_input(
+            "Clé API Albert",
+            value=st.session_state.get("albert_api_key", os.getenv("ALBERT_API_KEY", "")),
+            type="password",
+            help="Votre token d'authentification Albert (Etalab)"
+        )
+        if albert_api_key:
+            st.session_state.albert_api_key = albert_api_key
+
+        # Sélection du modèle Albert LLM
+        if llm_provider == "albert":
+            albert_model = st.selectbox(
+                "Modèle Albert",
+                options=["albert-large", "albert-small", "albert-code"],
+                index=0,
+                help="albert-large (principal), albert-small (léger), albert-code (code)"
+            )
+            st.session_state.albert_model = albert_model
+    else:
+        albert_api_key = None
+
+    # Afficher le statut des providers
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if llm_provider == "aristote" and api_key:
+            st.success(f"LLM: Aristote ✅")
+        elif llm_provider == "albert" and albert_api_key:
+            st.success(f"LLM: Albert ✅")
+        else:
+            st.warning(f"LLM: {llm_provider} ⚠️")
+    with col2:
+        if embedding_provider == "albert" and albert_api_key:
+            st.success("Embed: Albert ✅")
+        elif embedding_provider == "ollama":
+            st.info("Embed: Ollama")
+        else:
+            st.warning(f"Embed: {embedding_provider} ⚠️")
+
+    st.divider()
+
+    if api_key or (llm_provider == "albert" and albert_api_key):
         # SÉCURITÉ: Stocker dans session_state au lieu de os.environ
-        st.session_state.api_key = api_key
+        if api_key:
+            st.session_state.api_key = api_key
 
-        # Bouton de diagnostic
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔍 Tester la connexion"):
-                with st.spinner("Test de connexion..."):
-                    diag = test_api_connection(api_key, api_base)
+        # Section spécifique au provider Aristote
+        if llm_provider == "aristote" and api_key:
+            # Bouton de diagnostic Aristote
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔍 Tester Aristote"):
+                    with st.spinner("Test de connexion..."):
+                        diag = test_api_connection(api_key, api_base)
 
-                    if diag["success"]:
-                        st.success(f"✅ Connexion réussie!")
-                        st.json(diag)
-                    else:
-                        st.error(f"❌ Échec: {diag['error']}")
-                        if diag["status_code"]:
-                            st.warning(f"Code HTTP: {diag['status_code']}")
-                        if diag["response_preview"]:
-                            st.code(diag["response_preview"], language="json")
-                        st.info(f"URL testée: {diag['url']}/models")
+                        if diag["success"]:
+                            st.success(f"✅ Connexion réussie!")
+                            st.json(diag)
+                        else:
+                            st.error(f"❌ Échec: {diag['error']}")
+                            if diag["status_code"]:
+                                st.warning(f"Code HTTP: {diag['status_code']}")
+                            if diag["response_preview"]:
+                                st.code(diag["response_preview"], language="json")
+                            st.info(f"URL testée: {diag['url']}/models")
 
-        with col2:
+            with col2:
+                if st.button("🔄 Vider le cache"):
+                    st.cache_data.clear()
+                    st.rerun()
+
+            # Récupérer les modèles disponibles (passer la clé et l'URL en paramètre)
+            models = get_available_models(api_key, api_base)
+
+            if models:
+                selected_model = st.selectbox(
+                    "Modèle Aristote",
+                    options=models,
+                    help="Sélectionnez le modèle LLM Aristote à utiliser"
+                )
+                st.session_state.selected_model = selected_model
+                st.success(f"✅ Aristote connecté - {len(models)} modèle(s)")
+            else:
+                st.warning("⚠️ Aucun modèle Aristote - Cliquez sur 'Tester Aristote'")
+
+        # Section spécifique au provider Albert
+        elif llm_provider == "albert" and albert_api_key:
             if st.button("🔄 Vider le cache"):
                 st.cache_data.clear()
                 st.rerun()
-
-        # Récupérer les modèles disponibles (passer la clé et l'URL en paramètre)
-        models = get_available_models(api_key, api_base)
-
-        if models:
-            selected_model = st.selectbox(
-                "Modèle",
-                options=models,
-                help="Sélectionnez le modèle LLM à utiliser"
-            )
-            st.session_state.selected_model = selected_model
-            st.success(f"✅ Connecté - {len(models)} modèle(s) disponible(s)")
-        else:
-            st.warning("⚠️ Aucun modèle disponible - Cliquez sur 'Tester la connexion' pour diagnostiquer")
+            st.success(f"✅ Albert configuré - Modèle: {st.session_state.get('albert_model', 'albert-large')}")
     else:
         st.info("🔑 Entrez votre clé API pour commencer")
     
@@ -1307,9 +1455,10 @@ Si l'information n'est pas dans les documents, dis-le clairement.
                                 for m in st.session_state.messages
                             ]
 
-                            # Appel à l'API
+                            # Appel à l'API (multi-provider)
+                            selected_model = get_selected_model()
                             response = client.chat.completions.create(
-                                model=st.session_state.selected_model,
+                                model=selected_model,
                                 messages=api_messages
                             )
 
@@ -1323,5 +1472,6 @@ Si l'information n'est pas dans les documents, dis-le clairement.
                             })
 
                         except Exception as e:
-                            error_msg = handle_error(e, "Appel API Aristote")
+                            llm_provider = st.session_state.get("llm_provider", "aristote")
+                            error_msg = handle_error(e, f"Appel API {llm_provider.capitalize()}")
                             st.error(f"Erreur: {error_msg}")
