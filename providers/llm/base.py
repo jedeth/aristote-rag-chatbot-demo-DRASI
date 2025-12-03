@@ -4,7 +4,7 @@ Permet de basculer entre Aristote et Albert de manière transparente.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Generator
+from typing import List, Dict, Any, Optional, Generator, Union
 
 
 class LLMProvider(ABC):
@@ -17,7 +17,7 @@ class LLMProvider(ABC):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         stream: bool = False,
-    ) -> str | Generator[str, None, None]:
+    ) -> Union[str, Generator[str, None, None]]:
         """
         Envoie une requête de chat au LLM.
 

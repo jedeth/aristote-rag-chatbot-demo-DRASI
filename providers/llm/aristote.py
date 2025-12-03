@@ -4,7 +4,7 @@ Wrapper autour de l'API OpenAI-compatible d'Aristote.
 """
 
 import os
-from typing import List, Dict, Optional, Generator
+from typing import List, Dict, Optional, Generator, Union
 from openai import OpenAI
 from .base import LLMProvider
 
@@ -55,7 +55,7 @@ class AristoteLLM(LLMProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         stream: bool = False,
-    ) -> str | Generator[str, None, None]:
+    ) -> Union[str, Generator[str, None, None]]:
         """
         Envoie une requête de chat au LLM Aristote.
 
