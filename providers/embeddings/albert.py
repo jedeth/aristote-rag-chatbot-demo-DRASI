@@ -19,12 +19,11 @@ class AlbertEmbeddings(EmbeddingProvider):
     DEFAULT_MODEL = "embeddings-small"
     DIMENSION = 1024  # Dimension du modele embeddings-small (confirme par API)
 
-    # Limites de l'API Albert (doc officielle)
-    # embeddings-small: 500 RPM, 50000 RPD, tokens illimites
-    MAX_CHARS_PER_TEXT = 8000      # Limite par texte (conservative)
-    MAX_TEXTS_PER_BATCH = 50       # 500 RPM = on peut envoyer plus de textes par batch
-    RETRY_ATTEMPTS = 3             # Tentatives en cas d'erreur
-    RETRY_DELAY = 1                # Delai entre tentatives (secondes)
+    # Limites de l'API Albert (conservatif pour éviter les erreurs)
+    MAX_CHARS_PER_TEXT = 4000      # Limite par texte (réduit pour stabilité)
+    MAX_TEXTS_PER_BATCH = 10       # Batch plus petit pour éviter les timeouts
+    RETRY_ATTEMPTS = 5             # Plus de tentatives
+    RETRY_DELAY = 2                # Delai entre tentatives (secondes)
 
     def __init__(
         self,
@@ -56,8 +55,21 @@ class AlbertEmbeddings(EmbeddingProvider):
         self._max_chars = max_chars_per_text
         self._batch_size = batch_size
 
+    def _clean_text(self, text: str) -> str:
+        """Nettoie un texte pour l'API (caractères spéciaux, etc.)."""
+        import re
+        # Remplacer les caractères de contrôle problématiques
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', ' ', text)
+        # Normaliser les espaces multiples
+        text = re.sub(r'\s+', ' ', text)
+        # Supprimer les espaces en début/fin
+        return text.strip()
+
     def _truncate_text(self, text: str) -> str:
-        """Tronque un texte trop long pour l'API."""
+        """Nettoie et tronque un texte trop long pour l'API."""
+        # D'abord nettoyer
+        text = self._clean_text(text)
+
         if len(text) <= self._max_chars:
             return text
         # Tronquer en gardant le debut (plus informatif generalement)
@@ -94,23 +106,30 @@ class AlbertEmbeddings(EmbeddingProvider):
             status_code = e.response.status_code if e.response else 0
             error_text = e.response.text if e.response else str(e)
 
+            logging.warning(f"Albert API error {status_code}, attempt {attempt}: {error_text[:200]}")
+
             # Erreur 422 = probablement texte trop long ou trop de textes
-            if status_code == 422 and attempt < self.RETRY_ATTEMPTS:
-                logging.warning(f"Albert API 422 error, attempt {attempt}: {error_text}")
-                # Pas de retry pour 422, c'est une erreur de validation
+            if status_code == 422:
                 raise ValueError(f"Erreur de validation Albert API: {error_text}")
 
-            # Erreur 429 = rate limit
+            # Erreur 429 = rate limit, retry avec délai croissant
             if status_code == 429 and attempt < self.RETRY_ATTEMPTS:
-                wait_time = self.RETRY_DELAY * attempt
+                wait_time = self.RETRY_DELAY * (attempt ** 2)  # Backoff exponentiel
                 logging.warning(f"Albert API rate limit, waiting {wait_time}s...")
                 time.sleep(wait_time)
                 return self._call_embeddings_api(input_data, attempt + 1)
 
-            # Erreur 5xx = erreur serveur, retry
-            if status_code >= 500 and attempt < self.RETRY_ATTEMPTS:
+            # Erreur 5xx ou autre erreur serveur = retry
+            if (status_code >= 500 or status_code == 0) and attempt < self.RETRY_ATTEMPTS:
                 wait_time = self.RETRY_DELAY * attempt
                 logging.warning(f"Albert API server error {status_code}, retry in {wait_time}s...")
+                time.sleep(wait_time)
+                return self._call_embeddings_api(input_data, attempt + 1)
+
+            # Pour les autres erreurs, retry aussi
+            if attempt < self.RETRY_ATTEMPTS:
+                wait_time = self.RETRY_DELAY * attempt
+                logging.warning(f"Albert API error, retry in {wait_time}s...")
                 time.sleep(wait_time)
                 return self._call_embeddings_api(input_data, attempt + 1)
 
@@ -118,8 +137,18 @@ class AlbertEmbeddings(EmbeddingProvider):
 
         except requests.exceptions.Timeout:
             if attempt < self.RETRY_ATTEMPTS:
-                logging.warning(f"Albert API timeout, retry {attempt}...")
-                time.sleep(self.RETRY_DELAY)
+                wait_time = self.RETRY_DELAY * attempt
+                logging.warning(f"Albert API timeout, retry {attempt} in {wait_time}s...")
+                time.sleep(wait_time)
+                return self._call_embeddings_api(input_data, attempt + 1)
+            raise
+
+        except requests.exceptions.RequestException as e:
+            # Autres erreurs réseau
+            if attempt < self.RETRY_ATTEMPTS:
+                wait_time = self.RETRY_DELAY * attempt
+                logging.warning(f"Albert API network error: {e}, retry in {wait_time}s...")
+                time.sleep(wait_time)
                 return self._call_embeddings_api(input_data, attempt + 1)
             raise
 

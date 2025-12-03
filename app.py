@@ -689,19 +689,36 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[dic
 
 def create_embeddings(chunks: list[dict]) -> list[dict]:
     """
-    Crée les embeddings pour une liste de chunks via Ollama.
-    
+    Crée les embeddings pour une liste de chunks via le provider sélectionné.
+
     Args:
         chunks: Liste de chunks avec leur texte
-    
+
     Returns:
         Liste de chunks enrichis avec leurs embeddings
     """
-    # Version optimisée avec Ollama (locale et rapide)
-    for chunk in chunks:
-        embedding = get_embedding(chunk["text"])
-        chunk["embedding"] = embedding
-    
+    embedding_provider = st.session_state.get("embedding_provider", "ollama")
+
+    if embedding_provider == "albert":
+        # Utiliser le batch processing d'Albert (plus efficace)
+        albert_key = st.session_state.get("albert_api_key") or os.getenv("ALBERT_API_KEY")
+        if not albert_key:
+            raise ValueError("ALBERT_API_KEY non configurée")
+
+        embedder = AlbertEmbeddings(api_key=albert_key)
+        texts = [chunk["text"] for chunk in chunks]
+
+        # Utiliser embed_documents pour le batch processing
+        embeddings = embedder.embed_documents(texts)
+
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk["embedding"] = embedding
+    else:
+        # Version Ollama (un par un, mais rapide en local)
+        for chunk in chunks:
+            embedding = get_embedding(chunk["text"])
+            chunk["embedding"] = embedding
+
     # Version précédente avec sentence-transformers (conservée en commentaire)
     # model = get_embedding_model()
     # texts = [chunk["text"] for chunk in chunks]
