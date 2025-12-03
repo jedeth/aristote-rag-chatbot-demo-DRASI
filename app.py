@@ -1228,6 +1228,20 @@ with st.sidebar:
                     except:
                         pass
                 st.caption(f"📄 **{doc_name}** - {chunks_count} chunks (indexé le {indexed_at})")
+
+            # Bouton pour vider toute la base
+            st.divider()
+            if st.button("🗑️ Vider toute la base", type="secondary"):
+                client = get_chroma_client()
+                try:
+                    client.delete_collection("documents")
+                except Exception:
+                    pass
+                if os.path.exists(METADATA_FILE):
+                    os.remove(METADATA_FILE)
+                st.session_state.documents_text = {}
+                st.cache_resource.clear()
+                st.rerun()
     else:
         st.info("📭 Aucun document indexé. Chargez des documents pour commencer.")
 
