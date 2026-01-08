@@ -1,0 +1,134 @@
+version: '3.9'
+
+# =============================================================================
+# Docker Compose V2 - Architecture Hexagonale
+# API FastAPI (port 8000) + Frontend Streamlit (port 8502) + Reverse Proxy
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API FastAPI - Architecture Hexagonale (Backend)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: aristote-api-v2
+    restart: unless-stopped
+    environment:
+      # Configuration Aristote
+      - ARISTOTE_API_BASE=${ARISTOTE_API_BASE:-https://llm.ilaas.fr/v1}
+      - ARISTOTE_API_KEY=${ARISTOTE_API_KEY:?ARISTOTE_API_KEY est requis}
+
+      # Configuration Albert (optionnel)
+      - ALBERT_API_BASE=${ALBERT_API_BASE:-https://albert.api.etalab.gouv.fr/v1}
+      - ALBERT_API_KEY=${ALBERT_API_KEY:-}
+
+      # Configuration des providers
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
+      - LLM_PROVIDER=${LLM_PROVIDER:-aristote}
+
+      # Chemins
+      - CHROMA_DB_PATH=/app/chroma_db
+      - CHROMA_COLLECTION_NAME=documents
+    volumes:
+      # Partager la base ChromaDB avec l'ancienne app (lecture seule)
+      - chroma_data:/app/chroma_db
+      - ./logs:/app/logs
+    networks:
+      - aristote-network-v2
+    ports:
+      - "8000:8000"  # Exposé pour tests directs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # deploy:  # Commenté pour Podman (problème cgroups)
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # Frontend Streamlit V2 - Client pur (appelle l'API)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.api  # Réutilise la même base
+    container_name: aristote-frontend-v2
+    restart: unless-stopped
+    command: streamlit run frontend/app_v2.py --server.port=8502 --server.address=0.0.0.0
+    environment:
+      - API_URL=http://api:8000
+      - STREAMLIT_SERVER_PORT=8502
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    volumes:
+      - ./frontend:/app/frontend:ro
+    networks:
+      - aristote-network-v2
+    ports:
+      - "8502:8502"  # Port 8502 pour ne pas conflit avec 8501 (ancienne app)
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8502/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # Reverse Proxy - Caddy (optionnel pour V2)
+  # ---------------------------------------------------------------------------
+  reverse-proxy-v2:
+    image: docker.io/library/caddy:2.7-alpine
+    container_name: aristote-caddy-v2
+    restart: unless-stopped
+    ports:
+      - "8080:80"    # HTTP sur port 8080 (pour ne pas conflit avec le port 80 de v1)
+      - "8443:443"   # HTTPS sur port 8443
+    volumes:
+      - ./Caddyfile.v2:/etc/caddy/Caddyfile:ro
+      - caddy_data_v2:/data
+      - caddy_config_v2:/config
+    networks:
+      - aristote-network-v2
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+
+# =============================================================================
+# Volumes persistants
+# =============================================================================
+volumes:
+  # Base ChromaDB partagée avec l'ancienne app
+  chroma_data:
+    external: true
+    name: aristote-rag-chatbot-demo-drasi_chroma_data
+
+  # Volumes Caddy V2
+  caddy_data_v2:
+    driver: local
+  caddy_config_v2:
+    driver: local
+
+# =============================================================================
+# Réseau isolé V2
+# =============================================================================
+networks:
+  aristote-network-v2:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16

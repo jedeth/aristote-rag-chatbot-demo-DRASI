@@ -1,0 +1,104 @@
+# =============================================================================
+# Caddyfile - Configuration Reverse Proxy pour Aristote RAG Chatbot
+# =============================================================================
+
+# Configuration globale
+{
+    # Désactiver l'admin API (sécurité)
+    admin off
+
+    # Logs structurés en JSON
+    log {
+        output stdout
+        format json
+        level INFO
+    }
+}
+
+# =============================================================================
+# PRODUCTION: Remplacer "localhost" par votre domaine (ex: chatbot.example.com)
+# Caddy obtiendra automatiquement un certificat Let's Encrypt valide
+# =============================================================================
+
+# Configuration pour localhost (développement)
+# En production, remplacez par: chatbot.example.com
+localhost {
+    # Reverse proxy vers le service Streamlit
+    reverse_proxy app:8501 {
+        # Load balancing (Round-Robin) - prêt pour Phase 3 avec plusieurs réplicas
+        lb_policy round_robin
+
+        # Health checks
+        health_uri /_stcore/health
+        health_interval 30s
+        health_timeout 10s
+
+        # Headers pour WebSocket (requis par Streamlit)
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Headers de sécurité
+    header {
+        # Prevent clickjacking
+        X-Frame-Options "SAMEORIGIN"
+
+        # XSS Protection
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+
+        # HSTS (force HTTPS) - actif uniquement en HTTPS
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+        # Content Security Policy (ajustable selon vos besoins)
+        Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https:; connect-src 'self' wss: ws:;"
+
+        # Referrer Policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+
+        # Permissions Policy
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+        # Retirer les headers révélant la stack technique
+        -Server
+        -X-Powered-By
+    }
+
+    # Compression Gzip/Brotli
+    encode gzip zstd
+
+    # Rate limiting: 20 requêtes par minute par IP
+    # Note: nécessite le module rate_limit (inclus dans l'image officielle)
+    # En dev, vous pouvez commenter cette section si elle pose problème
+    @ratelimit {
+        not path /_stcore/health
+    }
+    # rate_limit @ratelimit {
+    #     zone static_zone {
+    #         key {remote_host}
+    #         events 20
+    #         window 1m
+    #     }
+    # }
+
+    # Logs d'accès
+    log {
+        output file /data/logs/access.log {
+            roll_size 100mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
+}
+
+# =============================================================================
+# Configuration alternative pour HTTP uniquement (dev/test local)
+# Décommentez si vous voulez désactiver HTTPS en local
+# =============================================================================
+
+# :80 {
+#     reverse_proxy app:8501
+#     encode gzip
+# }

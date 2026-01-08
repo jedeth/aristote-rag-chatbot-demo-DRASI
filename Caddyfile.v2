@@ -1,0 +1,52 @@
+# =============================================================================
+# Caddyfile V2 - Reverse Proxy pour Architecture Hexagonale
+# =============================================================================
+
+{
+    admin off
+    log {
+        output stdout
+        format json
+        level INFO
+    }
+}
+
+# Configuration localhost (développement)
+localhost:8080 {
+    # Route /api -> FastAPI
+    handle /api/* {
+        reverse_proxy api:8000 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Route / -> Frontend Streamlit
+    handle {
+        reverse_proxy frontend:8502 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Headers de sécurité
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+        -Server
+        -X-Powered-By
+    }
+
+    # Compression
+    encode gzip zstd
+
+    # Logs
+    log {
+        output file /data/logs/access-v2.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+        format json
+    }
+}

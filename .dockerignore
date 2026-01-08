@@ -1,0 +1,72 @@
+# Environnement Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environnement et secrets
+.env
+*.log
+
+# Données locales (volumes Docker)
+data/
+chroma_db/
+chroma_db_v2/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation et scripts de build
+README.md
+BUILD_INSTRUCTIONS.md
+PROMPTS_VIBE_CODING.md
+NOTES_DEV_ALBERT_INTEGRATION.md
+CLAUDE_CODE_PROMPT_ALBERT_INTEGRATION.md
+GUIDE_DEMO.md
+DEMO_QUICK_START.txt
+doc_perso_autoformation/
+doc_RAG/
+
+# Scripts de build desktop (inutiles dans Docker)
+build_exe.py
+build_full_package.py
+build_package.py
+build_standalone.py
+build_standalone_local.py
+installer.iss
+launcher.py
+setup_environment.py
+*.spec
+
+# Tests (à copier séparément si nécessaire)
+tests/
+test_*.py
+pytest.ini
+
+# Fichiers temporaires
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
