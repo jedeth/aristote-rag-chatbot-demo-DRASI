@@ -453,7 +453,7 @@ def get_selected_model() -> str:
     """Retourne le modèle sélectionné selon le provider LLM."""
     llm_provider = st.session_state.get("llm_provider", "aristote")
     if llm_provider == "albert":
-        return st.session_state.get("albert_model", "albert-large")
+        return st.session_state.get("albert_model", "openweight-medium")
     else:
         return st.session_state.get("selected_model", "meta-llama/Llama-3.3-70B-Instruct")
 
@@ -1254,9 +1254,9 @@ with st.sidebar:
         if llm_provider == "albert":
             albert_model = st.selectbox(
                 "Modèle Albert",
-                options=["albert-large", "albert-small", "albert-code"],
+                options=["openweight-medium", "openweight-small", "openweight-large", "openweight-code"],
                 index=0,
-                help="albert-large (principal), albert-small (léger), albert-code (code)"
+                help="openweight-medium (multimodal), openweight-small (léger), openweight-large (puissant), openweight-code (code)"
             )
             st.session_state.albert_model = albert_model
     else:
@@ -1331,7 +1331,7 @@ with st.sidebar:
             if st.button("🔄 Vider le cache"):
                 st.cache_data.clear()
                 st.rerun()
-            st.success(f"✅ Albert configuré - Modèle: {st.session_state.get('albert_model', 'albert-large')}")
+            st.success(f"✅ Albert configuré - Modèle: {st.session_state.get('albert_model', 'openweight-medium')}")
     else:
         st.info("🔑 Entrez votre clé API pour commencer")
     
@@ -1421,7 +1421,7 @@ with st.sidebar:
         if not albert_configured:
             st.caption("⚠️ Clé API Albert requise pour l'analyse d'images")
         else:
-            st.caption("📸 Les images seront analysées avec albert-large (vision)")
+            st.caption("📸 Les images seront analysées avec openweight-medium (vision)")
         st.session_state.analyze_images = analyze_images
 
         max_images = st.slider("Images max par document", 1, 50, 20,

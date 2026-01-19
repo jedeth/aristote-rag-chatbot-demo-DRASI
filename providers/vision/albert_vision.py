@@ -13,10 +13,10 @@ from openai import OpenAI
 class AlbertVision:
     """
     Provider de vision utilisant l'API Albert d'Etalab.
-    Utilise le modèle albert-large (multimodal) pour analyser les images.
+    Utilise le modèle openweight-medium (multimodal, Mistral-Small-3.2-24B) pour analyser les images.
     """
 
-    DEFAULT_MODEL = "albert-large"  # Modèle multimodal
+    DEFAULT_MODEL = "openweight-medium"  # Anciennement albert-large (multimodal)
 
     def __init__(
         self,

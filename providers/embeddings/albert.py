@@ -1,6 +1,6 @@
 """
 Provider d'embeddings utilisant l'API Albert d'Etalab.
-Utilise le modèle embeddings-small via appels REST directs.
+Utilise le modèle openweight-embeddings (BAAI/bge-m3) via appels REST directs.
 Gere les limites de tokens par batch processing.
 """
 
@@ -16,8 +16,8 @@ class AlbertEmbeddings(EmbeddingProvider):
     """Provider d'embeddings utilisant l'API Albert d'Etalab."""
 
     # Modele d'embeddings Albert
-    DEFAULT_MODEL = "embeddings-small"
-    DIMENSION = 1024  # Dimension du modele embeddings-small (confirme par API)
+    DEFAULT_MODEL = "openweight-embeddings"  # Anciennement embeddings-small (BAAI/bge-m3)
+    DIMENSION = 1024  # Dimension du modèle (confirme par API)
 
     # Limites de l'API Albert (conservatif pour éviter les erreurs)
     MAX_CHARS_PER_TEXT = 4000      # Limite par texte (réduit pour stabilité)

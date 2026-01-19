@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 class AlbertLLMAdapter(LLMPort):
     """Adapter pour Albert API - implémente l'interface LLMPort."""
 
-    DEFAULT_MODEL = "albert-large"
+    DEFAULT_MODEL = "openweight-medium"  # Anciennement albert-large
     API_BASE = "https://albert.api.etalab.gouv.fr/v1"
-    AVAILABLE_MODELS = ["albert-small", "albert-large", "albert-code"]
+    AVAILABLE_MODELS = ["openweight-small", "openweight-medium", "openweight-large", "openweight-code"]
 
     def __init__(self, api_key: str, model_name: str = DEFAULT_MODEL):
         """
@@ -26,7 +26,7 @@ class AlbertLLMAdapter(LLMPort):
 
         Args:
             api_key: Clé API Albert
-            model_name: Nom du modèle (défaut: albert-large)
+            model_name: Nom du modèle (défaut: openweight-medium)
 
         Raises:
             LLMError: Si l'initialisation échoue

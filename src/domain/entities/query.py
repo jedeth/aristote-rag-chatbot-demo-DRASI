@@ -23,8 +23,8 @@ class Query:
         if not self.text or not self.text.strip():
             raise ValueError("La requête ne peut pas être vide")
 
-        if len(self.text) > 1000:
-            raise ValueError("La requête est trop longue (max 1000 caractères)")
+        if len(self.text) > 20000:
+            raise ValueError("La requête est trop longue (max 20000 caractères)")
 
 
 @dataclass
@@ -46,9 +46,9 @@ class SearchResult:
 class RAGResponse:
     """Représente une réponse RAG complète."""
 
-    id: str = field(default_factory=lambda: str(uuid4()))
     query: Query
     response_text: str
+    id: str = field(default_factory=lambda: str(uuid4()))
     sources: List[SearchResult] = field(default_factory=list)
     context_used: str = ""
     model_name: str = ""

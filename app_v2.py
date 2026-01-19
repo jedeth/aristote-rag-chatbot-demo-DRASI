@@ -3,9 +3,9 @@ Aristote RAG Chatbot v2 - Multi-Provider Edition
 ================================================
 Version avec support multi-provider:
 - Embeddings: Ollama (local) ou Albert (API Etalab)
-- LLM: Aristote (DRASI) ou Albert (small/large/code)
-- Reranking: Albert rerank-small (optionnel)
-- Vision: Albert albert-large pour les tableaux/graphiques (optionnel)
+- LLM: Aristote (DRASI) ou Albert (small/medium/large/code)
+- Reranking: Albert openweight-rerank (optionnel)
+- Vision: Albert openweight-medium pour les tableaux/graphiques (optionnel)
 """
 
 import os
@@ -140,7 +140,7 @@ PROVIDER_CONFIG = {
             "base_url": "http://localhost:11434"
         },
         "albert": {
-            "model": "embeddings-small"
+            "model": "openweight-embeddings"  # Anciennement embeddings-small
         }
     },
     "llm": {
@@ -149,18 +149,18 @@ PROVIDER_CONFIG = {
             "model": "meta-llama/Llama-3.3-70B-Instruct"
         },
         "albert": {
-            "model": "albert-large",  # albert-small, albert-large, albert-code
-            "available_models": ["albert-small", "albert-large", "albert-code"]
+            "model": "openweight-medium",  # openweight-small, openweight-medium, openweight-large, openweight-code
+            "available_models": ["openweight-small", "openweight-medium", "openweight-large", "openweight-code"]
         }
     },
     "rerank": {
         "enabled": False,
-        "model": "rerank-small",
+        "model": "openweight-rerank",  # Anciennement rerank-small
         "top_k": 5
     },
     "vision": {
         "enabled": False,
-        "model": "albert-large"
+        "model": "openweight-medium"  # Anciennement albert-large (multimodal)
     }
 }
 
@@ -380,7 +380,7 @@ def get_chroma_collection(session_id: str = None, embedding_provider: str = None
     Récupère ou crée une collection ChromaDB.
 
     Les collections sont séparées par provider d'embeddings car les dimensions
-    diffèrent (Ollama nomic-embed-text: 768, Albert embeddings-small: 1024).
+    diffèrent (Ollama nomic-embed-text: 768, Albert openweight-embeddings: 1024).
     """
     # Déterminer le provider d'embeddings actuel
     if embedding_provider is None:
@@ -906,9 +906,9 @@ with st.sidebar:
         if llm_provider == "albert":
             albert_model = st.selectbox(
                 "Modèle Albert",
-                ["albert-small", "albert-large", "albert-code"],
+                ["openweight-small", "openweight-medium", "openweight-large", "openweight-code"],
                 index=1,
-                help="small: rapide | large: polyvalent | code: dev"
+                help="small: rapide | medium: polyvalent+multimodal | large: puissant | code: dev"
             )
             st.session_state.provider_config["llm"]["albert"]["model"] = albert_model
 

@@ -43,8 +43,8 @@ class Document:
         if not self.filename:
             raise ValueError("Le nom du fichier ne peut pas être vide")
 
-        if not self.filename.lower().endswith(('.pdf', '.docx')):
-            raise ValueError("Format de fichier non supporté (PDF ou DOCX uniquement)")
+        if not self.filename.lower().endswith(('.pdf', '.docx', '.txt')):
+            raise ValueError("Format de fichier non supporté (PDF, DOCX ou TXT uniquement)")
 
     @property
     def chunks_count(self) -> int:

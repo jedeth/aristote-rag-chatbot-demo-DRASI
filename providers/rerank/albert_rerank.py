@@ -20,10 +20,10 @@ class RerankResult:
 class AlbertReranker:
     """
     Reranker utilisant l'API Albert d'Etalab.
-    Utilise le modèle rerank-small pour réordonner les résultats.
+    Utilise le modèle openweight-rerank (BAAI/bge-reranker-m3) pour réordonner les résultats.
     """
 
-    DEFAULT_MODEL = "rerank-small"
+    DEFAULT_MODEL = "openweight-rerank"  # Anciennement rerank-small
 
     def __init__(
         self,

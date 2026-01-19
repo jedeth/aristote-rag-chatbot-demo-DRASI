@@ -29,14 +29,22 @@ def call_api_health() -> Dict:
         return {"status": "error", "detail": str(e)}
 
 
-def call_api_query(query: str, n_results: int = 5, temperature: float = 0.7) -> Dict:
+def call_api_query(
+    query: str,
+    n_results: int = 5,
+    temperature: float = 0.7,
+    llm_provider: str = "aristote",
+    embedding_provider: str = "ollama"
+) -> Dict:
     """Appel API : Requête RAG."""
     try:
         payload = {
             "query": query,
             "n_results": n_results,
             "temperature": temperature,
-            "max_tokens": 1000
+            "max_tokens": 1000,
+            "llm_provider": llm_provider,
+            "embedding_provider": embedding_provider
         }
         response = requests.post(
             f"{API_URL}/query",
@@ -59,6 +67,41 @@ def call_api_documents() -> Dict:
         return response.json()
     except Exception as e:
         return {"error": str(e)}
+
+
+def call_api_upload(file_bytes: bytes, filename: str) -> Dict:
+    """Appel API : Upload d'un document."""
+    try:
+        files = {"file": (filename, file_bytes)}
+        response = requests.post(
+            f"{API_URL}/documents/upload",
+            files=files,
+            timeout=120
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        return {
+            "error": f"Erreur API ({e.response.status_code})",
+            "detail": e.response.text
+        }
+    except Exception as e:
+        return {"error": "Erreur d'upload", "detail": str(e)}
+
+
+def call_api_delete_all() -> Dict:
+    """Appel API : Suppression de tous les documents."""
+    try:
+        response = requests.delete(f"{API_URL}/documents", timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        return {
+            "error": f"Erreur API ({e.response.status_code})",
+            "detail": e.response.text
+        }
+    except Exception as e:
+        return {"error": "Erreur de suppression", "detail": str(e)}
 
 
 # Interface utilisateur
@@ -84,8 +127,71 @@ with st.sidebar:
 
     st.divider()
 
+    # Upload de documents
+    st.subheader("📤 Gestion des documents")
+
+    uploaded_file = st.file_uploader(
+        "Uploader un document",
+        type=["pdf", "docx", "txt"],
+        help="Formats supportés: PDF, DOCX, TXT"
+    )
+
+    if uploaded_file is not None:
+        if st.button("📥 Indexer le document", type="primary"):
+            with st.spinner(f"Indexation de {uploaded_file.name}..."):
+                file_bytes = uploaded_file.read()
+                result = call_api_upload(file_bytes, uploaded_file.name)
+
+                if "error" in result:
+                    st.error(f"❌ {result['error']}")
+                    if "detail" in result:
+                        st.caption(result["detail"])
+                else:
+                    st.success(f"✅ {result.get('message', 'Document indexé')}")
+                    st.info(f"📊 {result.get('chunks_count', 0)} chunks créés")
+                    st.rerun()
+
+    # Bouton pour vider la base
+    if st.button("🗑️ Vider la base", type="secondary", use_container_width=True):
+        if st.session_state.get("confirm_delete"):
+            with st.spinner("Suppression en cours..."):
+                result = call_api_delete_all()
+                if "error" in result:
+                    st.error(f"❌ {result['error']}")
+                else:
+                    st.success(f"✅ {result.get('deleted_count', 0)} documents supprimés")
+                    st.session_state["confirm_delete"] = False
+                    st.rerun()
+        else:
+            st.session_state["confirm_delete"] = True
+            st.warning("⚠️ Cliquez à nouveau pour confirmer")
+            st.rerun()
+
+    if st.session_state.get("confirm_delete") and st.button("❌ Annuler"):
+        st.session_state["confirm_delete"] = False
+        st.rerun()
+
+    st.divider()
+
     # Paramètres RAG
     st.subheader("🎛️ Paramètres RAG")
+
+    # Sélection du provider LLM
+    llm_provider = st.selectbox(
+        "Provider LLM",
+        options=["aristote", "albert"],
+        index=0,
+        help="Choisir le provider pour générer les réponses"
+    )
+
+    # Sélection du provider d'embeddings
+    embedding_provider = st.selectbox(
+        "Provider Embeddings",
+        options=["ollama", "albert"],
+        index=0,
+        help="Choisir le provider pour générer les embeddings"
+    )
+
     n_results = st.slider("Nombre de sources", 1, 10, 5)
     temperature = st.slider("Température LLM", 0.0, 1.0, 0.7, 0.1)
 
@@ -138,7 +244,13 @@ if prompt := st.chat_input("Posez votre question..."):
     # Appeler l'API
     with st.chat_message("assistant"):
         with st.spinner("Interrogation de l'API..."):
-            result = call_api_query(prompt, n_results, temperature)
+            result = call_api_query(
+                prompt,
+                n_results,
+                temperature,
+                llm_provider,
+                embedding_provider
+            )
 
         if "error" in result:
             st.error(f"❌ {result['error']}")

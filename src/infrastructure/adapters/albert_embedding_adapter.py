@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class AlbertEmbeddingAdapter(EmbeddingPort):
     """Adapter pour Albert API - implémente l'interface EmbeddingPort."""
 
-    MODEL_NAME = "embeddings-small"
+    MODEL_NAME = "openweight-embeddings"  # Anciennement embeddings-small (BAAI/bge-m3)
     DIMENSION = 1024
     API_BASE = "https://albert.api.etalab.gouv.fr/v1"
 
@@ -62,7 +62,8 @@ class AlbertEmbeddingAdapter(EmbeddingPort):
         try:
             response = self._client.embeddings.create(
                 model=self.MODEL_NAME,
-                input=text
+                input=text,
+                encoding_format="float"
             )
 
             embedding = response.data[0].embedding
@@ -101,7 +102,8 @@ class AlbertEmbeddingAdapter(EmbeddingPort):
             # Albert API accepte un batch d'inputs
             response = self._client.embeddings.create(
                 model=self.MODEL_NAME,
-                input=texts
+                input=texts,
+                encoding_format="float"
             )
 
             embeddings = [data.embedding for data in response.data]

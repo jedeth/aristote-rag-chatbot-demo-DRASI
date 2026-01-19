@@ -4,7 +4,7 @@ Architecture Hexagonale : API Layer avec Wiring/Injection
 """
 
 import logging
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
@@ -13,12 +13,16 @@ from .schemas.responses import (
     QueryResponse,
     HealthResponse,
     ErrorResponse,
-    SourceDTO
+    SourceDTO,
+    DocumentIndexResponse
 )
 
 from ..config import get_container
 from ..application.use_cases.query_rag import QueryRAGUseCase, RAGError
 from ..application.use_cases.search_similar import SearchSimilarUseCase, SearchError
+from ..application.use_cases.index_document import IndexDocumentUseCase, IndexError
+from ..application.use_cases.delete_documents import DeleteDocumentsUseCase, DeleteError
+from ..infrastructure.adapters.document_parser_adapter import DocumentParserAdapter
 
 
 # Configuration du logging
@@ -113,9 +117,11 @@ async def query_rag(request: QueryRequest):
     try:
         # WIRING : Récupération des ports depuis le conteneur
         container = get_container()
-        embedding_port = container.get_embedding_port()
+
+        # Utiliser les providers spécifiés dans la requête
+        embedding_port = container.get_embedding_port(request.embedding_provider)
         vector_store_port = container.get_vector_store()
-        llm_port = container.get_llm_port()
+        llm_port = container.get_llm_port(request.llm_provider)
 
         # WIRING : Injection dans le use case
         use_case = QueryRAGUseCase(
@@ -209,6 +215,149 @@ async def list_documents():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
+        )
+
+
+@app.post(
+    "/documents/upload",
+    response_model=DocumentIndexResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Fichier invalide"},
+        500: {"model": ErrorResponse, "description": "Erreur serveur"}
+    }
+)
+async def upload_document(file: UploadFile = File(...)):
+    """
+    Upload et indexe un document.
+
+    Args:
+        file: Fichier à indexer (PDF, DOCX, TXT)
+
+    Returns:
+        DocumentIndexResponse: Informations sur le document indexé
+
+    Raises:
+        HTTPException: Si l'indexation échoue
+    """
+    logger.info(f"📤 Upload du fichier: {file.filename}")
+
+    # Validation du nom de fichier
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le nom de fichier est requis"
+        )
+
+    # Validation du type de fichier
+    allowed_extensions = [".pdf", ".docx", ".txt"]
+    if not any(file.filename.lower().endswith(ext) for ext in allowed_extensions):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Type de fichier non supporté. Formats acceptés: {', '.join(allowed_extensions)}"
+        )
+
+    try:
+        # Lire le contenu du fichier
+        file_bytes = await file.read()
+
+        if not file_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Le fichier est vide"
+            )
+
+        # Parser le document
+        parser = DocumentParserAdapter(chunk_size=1000, chunk_overlap=200)
+        document = parser.parse_document(file_bytes, file.filename)
+
+        # Indexer le document
+        container = get_container()
+        embedding_port = container.get_embedding_port()
+        vector_store_port = container.get_vector_store()
+
+        use_case = IndexDocumentUseCase(
+            embedding_port=embedding_port,
+            vector_store_port=vector_store_port
+        )
+
+        indexed_doc = use_case.execute(document)
+
+        logger.info(f"✅ Document {file.filename} indexé ({indexed_doc.chunks_count} chunks)")
+
+        return DocumentIndexResponse(
+            document_id=indexed_doc.id,
+            filename=indexed_doc.filename,
+            chunks_count=indexed_doc.chunks_count,
+            message=f"Document '{file.filename}' indexé avec succès"
+        )
+
+    except ValueError as e:
+        logger.error(f"❌ Erreur validation fichier: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except IndexError as e:
+        logger.error(f"❌ Erreur indexation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Erreur inattendue upload: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Une erreur inattendue s'est produite lors de l'upload"
+        )
+
+
+@app.delete(
+    "/documents",
+    responses={
+        200: {"description": "Documents supprimés"},
+        500: {"model": ErrorResponse, "description": "Erreur serveur"}
+    }
+)
+async def delete_all_documents():
+    """
+    Supprime tous les documents de la base.
+
+    Returns:
+        Message de confirmation avec le nombre de documents supprimés
+
+    Raises:
+        HTTPException: Si la suppression échoue
+    """
+    logger.info("🗑️ Suppression de tous les documents")
+
+    try:
+        container = get_container()
+        vector_store_port = container.get_vector_store()
+
+        use_case = DeleteDocumentsUseCase(vector_store_port=vector_store_port)
+        count = use_case.execute_all()
+
+        logger.info(f"✅ {count} documents supprimés")
+
+        return {
+            "message": "Tous les documents ont été supprimés",
+            "deleted_count": count
+        }
+
+    except DeleteError as e:
+        logger.error(f"❌ Erreur suppression: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Erreur inattendue suppression: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Une erreur inattendue s'est produite lors de la suppression"
         )
 
 

@@ -1,6 +1,6 @@
 """
 Provider LLM utilisant l'API Albert d'Etalab.
-Supporte les modèles: albert-small, albert-large, albert-code
+Supporte les modèles: openweight-small, openweight-medium, openweight-large, openweight-code
 """
 
 import os
@@ -14,12 +14,13 @@ class AlbertLLM(LLMProvider):
 
     # Modèles disponibles sur Albert
     AVAILABLE_MODELS = {
-        "albert-small": "albert-small",      # Modèle léger pour tâches simples
-        "albert-large": "albert-large",      # Modèle principal (multimodal)
-        "albert-code": "albert-code",        # Spécialisé pour le code
+        "openweight-small": "openweight-small",      # Modèle léger (Ministral-3-8B)
+        "openweight-medium": "openweight-medium",    # Modèle principal avec multimodal (Mistral-Small-3.2-24B)
+        "openweight-large": "openweight-large",      # Grand modèle SANS multimodal (GPT-OSS-120B)
+        "openweight-code": "openweight-code",        # Spécialisé pour le code (Qwen3-Coder-30B)
     }
 
-    DEFAULT_MODEL = "albert-large"
+    DEFAULT_MODEL = "openweight-medium"  # Anciennement albert-large
 
     def __init__(
         self,
@@ -33,7 +34,7 @@ class AlbertLLM(LLMProvider):
         Args:
             api_key: Clé API Albert (ou variable d'env ALBERT_API_KEY)
             base_url: URL de l'API Albert
-            model: Nom du modèle LLM (albert-small, albert-large, albert-code)
+            model: Nom du modèle LLM (openweight-small, openweight-medium, openweight-large, openweight-code)
         """
         self._api_key = api_key or os.getenv("ALBERT_API_KEY")
         if not self._api_key:

@@ -34,12 +34,12 @@ class Config:
     ALBERT_API_KEY = os.getenv("ALBERT_API_KEY", "")
 
     # Providers (par défaut)
-    DEFAULT_EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama")  # "ollama" ou "albert"
-    DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "aristote")  # "aristote" ou "albert"
+    DEFAULT_EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "albert")  # "ollama" ou "albert"
+    DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "albert")  # "aristote" ou "albert"
 
     # Modèles
     ARISTOTE_MODEL = os.getenv("ARISTOTE_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
-    ALBERT_LLM_MODEL = os.getenv("ALBERT_LLM_MODEL", "albert-large")
+    ALBERT_LLM_MODEL = os.getenv("ALBERT_LLM_MODEL", "openweight-medium")  # Anciennement albert-large
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
 
@@ -104,9 +104,22 @@ class DependencyContainer:
         elif provider == "ollama":
             if self._embedding_port is None or not isinstance(self._embedding_port, OllamaEmbeddingAdapter):
                 logger.info(f"Initialisation EmbeddingPort (Ollama: {self.config.OLLAMA_EMBEDDING_MODEL})")
-                self._embedding_port = OllamaEmbeddingAdapter(
-                    model_name=self.config.OLLAMA_EMBEDDING_MODEL
-                )
+                try:
+                    self._embedding_port = OllamaEmbeddingAdapter(
+                        model_name=self.config.OLLAMA_EMBEDDING_MODEL
+                    )
+                except Exception as e:
+                    logger.warning(f"Ollama non disponible ({e}). Basculement vers Albert.")
+                    # Fallback vers Albert si Ollama n'est pas disponible
+                    if self.config.ALBERT_API_KEY:
+                        self._embedding_port = AlbertEmbeddingAdapter(
+                            api_key=self.config.ALBERT_API_KEY
+                        )
+                    else:
+                        raise ValueError(
+                            "Ollama n'est pas disponible et ALBERT_API_KEY n'est pas configurée. "
+                            "Configurez l'une des deux options."
+                        )
 
         else:
             raise ValueError(f"Provider d'embedding invalide: {provider}. Utilisez 'ollama' ou 'albert'.")
